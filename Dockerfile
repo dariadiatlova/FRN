@@ -9,6 +9,9 @@ ENV DEBIAN_FRONTEND=noninteractive
 RUN apt-get update && apt-get install -y --no-install-recommends \
     build-essential gcc  \
     libsndfile1 \
+    libjpeg-dev\
+    zlib1g-dev\
+    libpng-dev\
     ${NV_CUDNN_PACKAGE} \
     && apt-mark hold ${NV_CUDNN_PACKAGE_NAME} \
     && rm -rf /var/lib/apt/lists/*

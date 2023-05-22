@@ -134,7 +134,58 @@ class TestLoader(Dataset):
 
         target = torch.view_as_real(torch.stft(target, self.window_size, self.stride, window=self.hann, return_complex=True)).permute(2, 0, 1)
         sig = torch.view_as_real(torch.stft(sig, self.window_size, self.stride, window=self.hann, return_complex=True)).permute(2, 0, 1)
-        return sig.float(), target.float(), sig_wav, target_wav
+        return sig.float(), target.float(), sig_wav, target_wav, mask
+
+
+class NonBlindTestLoader(Dataset):
+    def __init__(self):
+        self.mask = CONFIG.NBTEST.masking
+        self.data_list = glob.glob(os.path.join(CONFIG.NBTEST.real_dir, '*.wav'))
+        if self.mask == 'real':
+            trace_txt = glob.glob(os.path.join(CONFIG.NBTEST.loss_path, '*.txt'))
+            self.trace_list = [1 - np.array(list(map(int, open(txt, 'r').read().strip('\n').split('\n')))) for txt in
+                               trace_txt]
+        else:
+            self.mask_generator = MaskGenerator(is_train=False, probs=CONFIG.NBTEST.transition_probs)
+
+        self.sr = CONFIG.DATA.sr
+        self.stride = CONFIG.DATA.stride
+        self.window_size = CONFIG.DATA.window_size
+        self.audio_chunk_len = CONFIG.DATA.audio_chunk_len
+        self.p_size = CONFIG.NBTEST.packet_size  # 20ms
+        self.hann = torch.sqrt(torch.hann_window(self.window_size))
+        assert len(self.trace_list) == len(self.data_list)
+
+    def __len__(self):
+        return len(self.data_list)
+
+    def __getitem__(self, index):
+        target = load_audio(self.data_list[index], sample_rate=self.sr)
+        target = target[:, :(target.shape[1] // self.p_size) * self.p_size]
+
+        sig = np.reshape(target, (-1, self.p_size)).copy()
+        if self.mask == 'real':
+            mask = self.trace_list[index]
+            assert sig.shape[0] == mask.shape[0]
+            # import pdb
+            # pdb.set_trace()
+            mask = np.tile(mask, (1, sig.shape[1])).reshape(-1, mask.shape[0]).T
+            # print("SIG", sig.shape)
+            # print("MASK", mask.shape)
+            assert sig.shape == mask.shape
+        else:
+            mask = self.mask_generator.gen_mask(len(sig), seed=index)[:, np.newaxis]
+        sig *= mask
+        sig = torch.tensor(sig).reshape(-1)
+
+        target = torch.tensor(target).squeeze(0)
+
+        sig_wav = sig.clone()
+        target_wav = target.clone()
+
+        target = torch.view_as_real(torch.stft(target, self.window_size, self.stride, window=self.hann, return_complex=True)).permute(2, 0, 1)
+        sig = torch.view_as_real(torch.stft(sig, self.window_size, self.stride, window=self.hann, return_complex=True)).permute(2, 0, 1)
+        return sig.float(), target.float(), sig_wav, target_wav, mask
 
 
 class BlindTestLoader(Dataset):
@@ -232,4 +283,4 @@ class TrainDataset(Dataset):
             torch.stft(target, self.chunk_len, self.stride, window=self.hann, return_complex=True)).permute(2, 0, 1).float()
         sig = torch.view_as_real(torch.stft(sig, self.chunk_len, self.stride, window=self.hann, return_complex=True))
         sig = sig.permute(2, 0, 1).float()
-        return sig, target
+        return sig, target, mask

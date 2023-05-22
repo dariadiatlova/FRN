@@ -1,11 +1,11 @@
 class CONFIG:
-    gpus = "0,1"  # List of gpu devices
+    gpus = "0, 1"  # List of gpu devices
 
     class TRAIN:
-        batch_size = 90  # number of audio files per batch
+        batch_size = 128  # number of audio files per batch
         lr = 1e-4  # learning rate
-        epochs = 150  # max training epochs
-        workers = 12  # number of dataloader workers
+        epochs = 300  # max training epochs
+        workers = 1  # number of dataloader workers
         val_split = 0.1  # validation set proportion
         clipping_val = 1.0  # gradient clipping value
         patience = 3  # learning rate scheduler's patience
@@ -55,5 +55,23 @@ class CONFIG:
         sample_path = 'audio_samples'  # path to save generated audio samples in evaluation.
 
     class TEST:
-        in_dir = 'test_samples/blind/lossy_signals'  # path to test audio inputs
-        out_dir = 'test_samples/blind/lossy_signals_out'  # path to generated outputs
+        in_dir = 'blind/lossy_signals'  # path to test audio inputs
+        real_dir = 'X_CleanReference'
+        out_dir = 'blind/lossy_signals_out'  # path to generated outputs
+        out_dir_orig = 'blind/lossy_signals48k'
+
+    class NBTEST:
+        packet_size = 960  # 20ms
+        transition_probs = [(0.9, 0.1)]  # (0.9, 0.1) ~ 10%; (0.8, 0.2) ~ 20%; (0.6, 0.4) ~ 40%
+        masking = 'real'  # whether using simulation or real traces from Microsoft to generate masks
+        assert masking in ['gen', 'real']
+        loss_path = 'blind/lossy_signals'  # must be clarified if masking = 'real'
+        real_dir = 'X_CleanReference'
+        out_dir = 'non_blind_out/frn_nox'  # path to generated outputs
+        out_dir_orig = 'non_blind_out/orig'
+
+    class WANDB:
+        project = "FRN"
+        log_n_audios = 16
+
+
