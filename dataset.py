@@ -1,6 +1,7 @@
 import glob
 import os
 import random
+from pathlib import Path
 
 import librosa
 import numpy as np
@@ -28,7 +29,6 @@ def load_audio(
 
         if chunk_len is not None and chunk_len < audio_len:
             start_index = torch.randint(0, audio_len - chunk_len, (1,))[0]
-
             frames = f._prepare_read(start_index, start_index + chunk_len, -1)
             audio = f.read(frames, always_2d=True, dtype="float32")
 
@@ -36,7 +36,7 @@ def load_audio(
             audio = f.read(always_2d=True, dtype="float32")
 
     if sr != sample_rate:
-        audio = librosa.resample(np.squeeze(audio), sr, sample_rate)[:, np.newaxis]
+        audio = librosa.resample(np.squeeze(audio), orig_sr=sr, target_sr=sample_rate)[:, np.newaxis]
 
     return audio.T
 
@@ -132,19 +132,20 @@ class TestLoader(Dataset):
         sig_wav = sig.clone()
         target_wav = target.clone()
 
-        target = torch.stft(target, self.window_size, self.stride, window=self.hann,
-                            return_complex=False).permute(2, 0, 1)
-        sig = torch.stft(sig, self.window_size, self.stride, window=self.hann, return_complex=False).permute(2, 0, 1)
+        target = torch.view_as_real(torch.stft(target, self.window_size, self.stride, window=self.hann, return_complex=True)).permute(2, 0, 1)
+        sig = torch.view_as_real(torch.stft(sig, self.window_size, self.stride, window=self.hann, return_complex=True)).permute(2, 0, 1)
         return sig.float(), target.float(), sig_wav, target_wav
 
 
 class BlindTestLoader(Dataset):
-    def __init__(self, test_dir):
-        self.data_list = glob.glob(os.path.join(test_dir, '*.wav'))
+    def __init__(self, test_dir, compute_metrics: bool = False):
+        self.data_list = glob.glob(os.path.join(test_dir, '*.wav'))[:3]
+        self.real_data_dir = CONFIG.TEST.real_dir
         self.sr = CONFIG.DATA.sr
         self.stride = CONFIG.DATA.stride
         self.chunk_len = CONFIG.DATA.window_size
         self.hann = torch.sqrt(torch.hann_window(self.chunk_len))
+        self.compute_metrics = compute_metrics
 
     def __len__(self):
         return len(self.data_list)
@@ -152,8 +153,18 @@ class BlindTestLoader(Dataset):
     def __getitem__(self, index):
         sig = load_audio(self.data_list[index], sample_rate=self.sr)
         sig = torch.from_numpy(sig).squeeze(0)
-        sig = torch.stft(sig, self.chunk_len, self.stride, window=self.hann, return_complex=False).permute(2, 0, 1)
-        return sig.float()
+        sig_wav = sig.clone()
+        sig = torch.view_as_real(
+            torch.stft(sig, self.chunk_len, self.stride, window=self.hann, return_complex=True)).permute(2, 0, 1)
+        if self.compute_metrics:
+            filename = Path(self.data_list[index]).name
+            target = load_audio(os.path.join(self.real_data_dir, filename))
+            target = torch.from_numpy(target).squeeze(0)
+            target_wav = target.clone()
+            target = torch.view_as_real(torch.stft(target, self.chunk_len, self.stride, window=self.hann, return_complex=True)).permute(2, 0, 1)
+            return sig.float(), target.float(), sig_wav, target_wav
+        else:
+            return sig.float(), sig_wav
 
 
 class TrainDataset(Dataset):
@@ -217,8 +228,8 @@ class TrainDataset(Dataset):
         sig *= mask
         sig = torch.tensor(sig.copy()).reshape(-1)
 
-        target = torch.stft(target, self.chunk_len, self.stride, window=self.hann,
-                            return_complex=False).permute(2, 0, 1).float()
-        sig = torch.stft(sig, self.chunk_len, self.stride, window=self.hann, return_complex=False)
+        target = torch.view_as_real(
+            torch.stft(target, self.chunk_len, self.stride, window=self.hann, return_complex=True)).permute(2, 0, 1).float()
+        sig = torch.view_as_real(torch.stft(sig, self.chunk_len, self.stride, window=self.hann, return_complex=True))
         sig = sig.permute(2, 0, 1).float()
         return sig, target

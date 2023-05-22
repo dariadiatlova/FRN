@@ -14,10 +14,10 @@ class STFTMag(nn.Module):
     # x: [B,T] or [T]
     @torch.no_grad()
     def forward(self, x):
-        stft = torch.stft(x.cpu(),
-                          self.nfft,
-                          self.hop,
-                          window=self.window,
-                          )  # return_complex=False)  #[B, F, TT,2]
+        stft = torch.view_as_real(torch.stft(x.cpu(),
+                                             self.nfft,
+                                             self.hop,
+                                             window=self.window,
+                                             return_complex=True))  # [B, F, TT,2]
         mag = torch.norm(stft, p=2, dim=-1)  # [B, F, TT]
         return mag
