@@ -1,12 +1,14 @@
 class CONFIG:
-    gpus = "0, 1"  # List of gpu devices
+    gpus = "0"  # List of gpu devices
 
     class TRAIN:
-        batch_size = 128  # number of audio files per batch
+        batch_size = 192  # number of audio files per batch
         lr = 1e-4  # learning rate
+        limit_val_batches = 2
         epochs = 300  # max training epochs
+        check_val_every_n_epoch = 10 # run validation each
         workers = 1  # number of dataloader workers
-        val_split = 0.1  # validation set proportion
+        val_split = 0.02  # validation set proportion
         clipping_val = 1.0  # gradient clipping value
         patience = 3  # learning rate scheduler's patience
         factor = 0.5  # learning rate reduction factor
@@ -39,8 +41,7 @@ class CONFIG:
         stride = 480  # stride of the STFT operation
 
         class TRAIN:
-            packet_sizes = [256, 512, 768, 960, 1024,
-                            1536]  # packet sizes for training. All sizes should be divisible by 'audio_chunk_len'
+            packet_sizes = [960]  # 256, 512, 768, 960, 1024, 1536 packet sizes for training. All sizes should be divisible by 'audio_chunk_len'
             transition_probs = ((0.9, 0.1), (0.5, 0.1), (0.5, 0.5))  # list of trainsition probs for Markow Chain
 
         class EVAL:
@@ -62,16 +63,18 @@ class CONFIG:
 
     class NBTEST:
         packet_size = 960  # 20ms
+        repeat_factor = 3 # will load real mask for orig sample rate, how much should repeat each sample (diff target sr / orig sr)
         transition_probs = [(0.9, 0.1)]  # (0.9, 0.1) ~ 10%; (0.8, 0.2) ~ 20%; (0.6, 0.4) ~ 40%
         masking = 'real'  # whether using simulation or real traces from Microsoft to generate masks
         assert masking in ['gen', 'real']
         loss_path = 'blind/lossy_signals'  # must be clarified if masking = 'real'
         real_dir = 'X_CleanReference'
-        out_dir = 'non_blind_out/frn_nox'  # path to generated outputs
-        out_dir_orig = 'non_blind_out/orig'
+        out_dir = 'causal_training/gen'  # path to generated outputs
+        out_dir_orig = 'causal_training/loosy'
 
     class WANDB:
         project = "FRN"
         log_n_audios = 16
+        monitor = "train_stft_loss"
 
 

@@ -17,6 +17,10 @@ from utils.utils import mkdir_p
 
 parser = argparse.ArgumentParser()
 
+parser.add_argument('--dirpath', default=None,
+                    help='directory to log values')
+parser.add_argument('--lr', default=None, type=float,
+                    help='if not specified will use value from config')
 parser.add_argument('--version', default=None,
                     help='version to resume')
 parser.add_argument('--mode', default='train',
@@ -25,7 +29,7 @@ parser.add_argument('--compute_metrics', default=None,
                     help='If true and mode test, will use test step with BlindTestLoader')
 
 args = parser.parse_args()
-os.environ["CUDA_VISIBLE_DEVICES"] = str(CONFIG.gpus)
+# os.environ["CUDA_VISIBLE_DEVICES"] = str(CONFIG.gpus)
 assert args.mode in ['train', 'eval', 'test', 'onnx', 'nbtest'], "--mode should be 'train', 'eval', 'test' or 'onnx'"
 
 
@@ -48,7 +52,9 @@ def resume(train_dataset, val_dataset, version):
 def train():
     train_dataset = TrainDataset('train')
     val_dataset = TrainDataset('val')
-    checkpoint_callback = ModelCheckpoint(monitor='val_loss', mode='min', verbose=True,
+    args.dirpath = args.dirpath if args.dirpath is not None else CONFIG.LOG.log_dir
+    checkpoint_callback = ModelCheckpoint(dirpath=args.dirpath,
+                                          monitor=CONFIG.WANDB.monitor, mode='min', verbose=True,
                                           filename='frn-{epoch:02d}-{val_loss:.4f}', save_weights_only=False)
     gpus = CONFIG.gpus.split(',')
     logger = WandbLogger(project=CONFIG.WANDB.project, log_model=False) # TO DO REFACTOR CONFIG
@@ -62,15 +68,17 @@ def train():
                          enc_in_dim=CONFIG.MODEL.enc_in_dim,
                          enc_dim=CONFIG.MODEL.enc_dim,
                          pred_dim=CONFIG.MODEL.pred_dim,
-                         pred_layers=CONFIG.MODEL.pred_layers)
+                         pred_layers=CONFIG.MODEL.pred_layers,
+                         lr=args.lr)
     logger.watch(model, log_graph=False)
     trainer = pl.Trainer(logger=logger,
                          gradient_clip_val=CONFIG.TRAIN.clipping_val,
                          gpus=len(gpus),
                          max_epochs=CONFIG.TRAIN.epochs,
                          accelerator="gpu" if len(gpus) > 1 else None,
-                         callbacks=[checkpoint_callback]
-                         )
+                         callbacks=[checkpoint_callback],
+                         limit_val_batches=CONFIG.TRAIN.limit_val_batches,
+                         check_val_every_n_epoch=CONFIG.TRAIN.check_val_every_n_epoch)
     print(model.hparams)
     print(
         'Dataset: {}, Train files: {}, Val files {}'.format(CONFIG.DATA.dataset, len(train_dataset), len(val_dataset)))
@@ -145,53 +153,24 @@ if __name__ == '__main__':
                 model.eval()
                 testset = NonBlindTestLoader()
                 test_loader = DataLoader(testset, batch_size=1, num_workers=4)
+                trainer = pl.Trainer(accelerator='gpu', devices=1, enable_checkpointing=False, logger=False)
                 data_lists = [i for i in test_loader.dataset.data_list]
-                for j, batch in enumerate(test_loader):
-                    if j > 2:
+                result = trainer.predict(model, test_loader, return_predictions=True)
+                import pdb
+                pdb.set_trace()
+                idx = 0
+                for j, in range(len(data_lists)):
+                    if j > 3:
                         break
-                    # CAUSAL INFERENCE
-                    inp, tar, inp_wav, tar_wav, mask = batch
-                    inp_wav = inp_wav.squeeze()
-                    tar_wav = tar_wav.squeeze()
-                    f_0 = inp[:, :, 0:1, :].to(model.device)
-                    x = inp[:, :, 1:, :].to(model.device)
-                    B, C, F, T = x.shape
-                    _, seq_len, p_size = mask.shape
-                    x = x.permute(3, 0, 1, 2).unsqueeze(-1)
-                    prev_mag = torch.zeros((B, 1, F, 1), device=x.device)
-                    predictor_state = torch.zeros((2, model.predictor.lstm_layers, B, model.predictor.lstm_dim),
-                                                  device=x.device)
-                    mlp_state = torch.zeros((model.encoder.depth, 2, 1, B, model.encoder.dim), device=x.device)
-                    result = []
-                    # t = min(T, seq_len * 2)
-                    idx = -1
-                    for i in range(T):
-                        if i % 2 == 0:
-                            idx += 1
-                        step = x[i].to(model.device)
-                        feat, mlp_state = model.encoder(step, mlp_state)
-                        prev_mag, predictor_state = model.predictor(prev_mag, predictor_state)
-                        # packet is lost
-                        if mask.shape[1] <= idx or mask[0, idx, 0] == 0:
-                            feat = torch.cat((feat, prev_mag), 1)
-                            feat = model.joiner(feat)
-                            # feat = feat + step
-                        # packet is not lost
-                        else:
-                            feat = x[i]
-                        result.append(feat)
-                        prev_mag = torch.linalg.norm(feat, dim=1, ord=1, keepdims=True)  # compute magnitude
-                    output = torch.cat(result, -1)
-                    pred = torch.cat([f_0, output], dim=2)
-                    pred = torch.view_as_complex(pred.permute(0, 2, 3, 1).contiguous())
-                    pred = torch.istft(pred, model.window_size, model.hop_size, window=model.window.to(pred.device))
-
+                    if j % 2 != 0:
+                        idx += 1
+                    pred = result[idx]
+                    inp_wav = result[idx + 1]
                     # save files
                     out_path = os.path.join(CONFIG.NBTEST.out_dir, os.path.basename(data_lists[j]))
                     sf.write(out_path, pred.squeeze(0).cpu().numpy(), samplerate=CONFIG.DATA.sr, subtype='PCM_16')
                     out_orig_path = os.path.join(CONFIG.NBTEST.out_dir_orig, os.path.basename(data_lists[j]))
                     sf.write(out_orig_path, inp_wav.squeeze(0).cpu().numpy(), samplerate=CONFIG.DATA.sr, subtype='PCM_16')
-
         else:
             onnx_path = 'lightning_logs/version_{}/checkpoints/frn.onnx'.format(str(args.version))
             to_onnx(model, onnx_path)

@@ -1,12 +1,13 @@
 import os
 
 import librosa
+import numpy as np
 import pytorch_lightning as pl
 import soundfile as sf
 import torch
+import wandb
 from torch import nn
-from torch.utils.data import DataLoader
-from torchmetrics.audio.pesq import PerceptualEvaluationSpeechQuality as PESQ
+# from torchmetrics.audio.pesq import PerceptualEvaluationSpeechQuality as PESQ
 from torchmetrics.audio.stoi import ShortTimeObjectiveIntelligibility as STOI
 
 from PLCMOS.plc_mos import PLCMOSEstimator
@@ -14,17 +15,19 @@ from config import CONFIG
 from loss import Loss
 from models.blocks import Encoder, Predictor
 from utils.utils import visualize, LSD
+from utils.tblogger import WandbSpectrogramLogging
 
 plcmos = PLCMOSEstimator()
 
 
 class PLCModel(pl.LightningModule):
     def __init__(self, train_dataset=None, val_dataset=None, window_size=960, enc_layers=4, enc_in_dim=384, enc_dim=768,
-                 pred_dim=512, pred_layers=1, pred_ckpt_path='lightning_logs/predictor/checkpoints/predictor.ckpt'):
+                 pred_dim=512, pred_layers=1, pred_ckpt_path='lightning_logs/predictor/checkpoints/predictor.ckpt',
+                 lr=None):
         super(PLCModel, self).__init__()
         self.window_size = window_size
         self.hop_size = window_size // 2
-        self.learning_rate = CONFIG.TRAIN.lr
+        self.learning_rate = lr if lr is not None else CONFIG.TRAIN.lr
         self.hparams.batch_size = CONFIG.TRAIN.batch_size
 
         self.enc_layers = enc_layers
@@ -35,7 +38,8 @@ class PLCModel(pl.LightningModule):
         self.train_dataset = train_dataset
         self.val_dataset = val_dataset
         self.stoi = STOI(48000)
-        self.pesq = PESQ(16000, 'wb')
+        # self.pesq = PESQ(16000, 'wb')
+        self.log_spec = WandbSpectrogramLogging()
 
         if pred_ckpt_path is not None:
             self.predictor = Predictor.load_from_checkpoint(pred_ckpt_path)
@@ -56,25 +60,29 @@ class PLCModel(pl.LightningModule):
         self.window = torch.sqrt(torch.hann_window(self.window_size))
         self.save_hyperparameters('window_size', 'enc_layers', 'enc_in_dim', 'enc_dim', 'pred_dim', 'pred_layers')
 
-    def forward(self, x):
-        """
-        Input: real-imaginary; shape (B, F, T, 2); F = hop_size + 1
-        Output: real-imaginary
-        """
-
+    def forward(self, x, mask):
+        #     """
+        #     Input: real-imaginary; shape (B, 2, F, T); F = hop_size
+        #            mask; shape (B, seq_len, p_dim)
+        #     Output: real-imaginary
+        #     """
         B, C, F, T = x.shape
-
+        mask = mask.permute(3, 0, 1, 2).unsqueeze(-1)
         x = x.permute(3, 0, 1, 2).unsqueeze(-1)
         prev_mag = torch.zeros((B, 1, F, 1), device=x.device)
-        predictor_state = torch.zeros((2, self.predictor.lstm_layers, B, self.predictor.lstm_dim), device=x.device)
+        predictor_state = torch.zeros((2, self.predictor.lstm_layers, B, self.predictor.lstm_dim),
+                                      device=x.device)
         mlp_state = torch.zeros((self.encoder.depth, 2, 1, B, self.encoder.dim), device=x.device)
         result = []
-        for step in x:
+        for i in range(T):
+            step = x[i].to(self.device)
             feat, mlp_state = self.encoder(step, mlp_state)
             prev_mag, predictor_state = self.predictor(prev_mag, predictor_state)
             feat = torch.cat((feat, prev_mag), 1)
             feat = self.joiner(feat)
             feat = feat + step
+            # if packet is not lost use gt
+            feat = torch.where(mask[i] == True, x[i], feat)
             result.append(feat)
             prev_mag = torch.linalg.norm(feat, dim=1, ord=1, keepdims=True)  # compute magnitude
         output = torch.cat(result, -1)
@@ -90,50 +98,85 @@ class PLCModel(pl.LightningModule):
         feat = feat + x
         return feat, prev_mag, predictor_state, mlp_state
 
-    def train_dataloader(self):
-        return DataLoader(self.train_dataset, shuffle=False, batch_size=self.hparams.batch_size,
-                          num_workers=CONFIG.TRAIN.workers, persistent_workers=True)
-
-    def val_dataloader(self):
-        return DataLoader(self.val_dataset, shuffle=False, batch_size=self.hparams.batch_size,
-                          num_workers=CONFIG.TRAIN.workers, persistent_workers=True)
-
     def training_step(self, batch, batch_idx):
-        x_in, y = batch
-        f_0 = x_in[:, :, 0:1, :]
-        x = x_in[:, :, 1:, :]
-
-        x = self(x)
+        inp, tar, mask = batch
+        f_0 = inp[:, :, 0:1, :]
+        x = inp[:, :, 1:, :]
+        mask = mask[:, :, 1:, :]
+        x = self(x, mask)
         x = torch.cat([f_0, x], dim=2)
-
-        loss = self.loss(x, y)
-        self.log('train_loss', loss, logger=True)
+        loss = self.loss(x, tar)
+        log_dict = {"train_stft_loss": loss.item(), "optimizer_rate/optimizer": self.optimizer.param_groups[0]['lr']}
+        self.log_dict(log_dict, on_step=True, on_epoch=False)
         return loss
 
     def validation_step(self, val_batch, batch_idx):
-        x, y = val_batch
-        f_0 = x[:, :, 0:1, :]
-        x_in = x[:, :, 1:, :]
+        inp, tar, mask = val_batch
+        f_0 = inp[:, :, 0:1, :]
+        x_in = inp[:, :, 1:, :]
+        mask = mask[:, :, 1:, :]
 
-        pred = self(x_in)
+        pred = self(x_in, mask)
         pred = torch.cat([f_0, pred], dim=2)
 
-        loss = self.loss(pred, y)
+        loss = self.loss(pred, tar)
         self.window = self.window.to(pred.device)
         pred = torch.view_as_complex(pred.permute(0, 2, 3, 1).contiguous())
         pred = torch.istft(pred, self.window_size, self.hop_size, window=self.window)
-        y = torch.view_as_complex(y.permute(0, 2, 3, 1).contiguous())
+        y = torch.view_as_complex(tar.permute(0, 2, 3, 1).contiguous())
         y = torch.istft(y, self.window_size, self.hop_size, window=self.window)
-
-        self.log('val_loss', loss, on_step=False, on_epoch=True, logger=True, prog_bar=True, sync_dist=True)
+        x = torch.view_as_complex(inp.permute(0, 2, 3, 1).contiguous())
+        x = torch.istft(x, self.window_size, self.hop_size, window=self.window)
 
         if batch_idx == 0:
-            i = torch.randint(0, x.shape[0], (1,)).item()
-            x = torch.view_as_complex(x.permute(0, 2, 3, 1).contiguous())
-            x = torch.istft(x[i], self.window_size, self.hop_size, window=self.window)
+            for i in range(CONFIG.WANDB.log_n_audios):
+                self.logger.experiment.log(
+                    {f"{i}/original_audio": wandb.Audio(y[i].detach().cpu(),
+                                                        caption=f"original_{i}",
+                                                        sample_rate=CONFIG.DATA.sr)}
+                )
 
-            self.trainer.logger.log_spectrogram(y[i], x, pred[i], self.current_epoch)
-            self.trainer.logger.log_audio(y[i], x, pred[i], self.current_epoch)
+                self.logger.experiment.log(
+                    {f"{i}/loosy_audio": wandb.Audio(x[i].detach().cpu(),
+                                                     caption=f"loosy_{i}",
+                                                     sample_rate=CONFIG.DATA.sr)}
+                )
+
+                self.logger.experiment.log(
+                    {f"{i}/reconstructed_audio": wandb.Audio(pred[i].detach().cpu(),
+                                                             caption=f"reconstructed_{i}",
+                                                             sample_rate=CONFIG.DATA.sr)}
+                )
+
+                spectrograms = self.log_spec.plot_spectrogram_to_numpy(y[i].detach().cpu(),
+                                                                       x[i].detach().cpu(),
+                                                                       pred[i].detach().cpu(),
+                                                                       self.global_step)
+                self.logger.experiment.log({f"Spectrograms_{i}": wandb.Image(spectrograms, caption=f"Spectrogram {i}")})
+        stoi = self.stoi(pred, y)
+        if CONFIG.DATA.sr != 16000:
+            pred, y = pred.detach().cpu().numpy(), y.detach().cpu().numpy()
+            pred = librosa.resample(pred, orig_sr=48000, target_sr=16000)
+            y = librosa.resample(y, orig_sr=48000, target_sr=16000, res_type='kaiser_fast')
+        # LOG METRICS
+        # pesq = self.pesq(torch.tensor(pred), torch.tensor(y))
+        intrusives = []
+        non_intrusives = []
+        lsds = []
+        for i in range(pred.shape[0]):
+            ret = plcmos.run(pred[i, :], y[i, :])
+            intrusives.append(ret[0])
+            non_intrusives.append(ret[1])
+            lsds.append(LSD(y[i, :], pred[i, :])[0])
+        log_dict = {
+            "Intrusive": float(np.mean(intrusives)),
+            "Non-intrusive": float(np.mean(non_intrusives)),
+            'LSD': float(np.mean(lsds)),
+            'STOI': stoi,
+            # 'PESQ': pesq,
+            "val_stft_loss": loss.item()
+        }
+        self.log_dict(log_dict, on_step=False, on_epoch=True, sync_dist=True)
 
     def test_step(self, test_batch, batch_idx):
         inp, tar, inp_wav, tar_wav = test_batch
@@ -163,37 +206,39 @@ class PLCModel(pl.LightningModule):
             pred = librosa.resample(pred, orig_sr=48000, target_sr=16000)
             tar_wav = librosa.resample(tar_wav, orig_sr=48000, target_sr=16000, res_type='kaiser_fast')
         ret = plcmos.run(pred, tar_wav)
-        pesq = self.pesq(torch.tensor(pred), torch.tensor(tar_wav))
+        # pesq = self.pesq(torch.tensor(pred), torch.tensor(tar_wav))
         metrics = {
             "Intrusive": ret[0],
             "Non-intrusive": ret[1],
             'LSD': lsd,
             'STOI': stoi,
-            'PESQ': pesq,
+            # 'PESQ': pesq,
         }
         self.log_dict(metrics)
         return metrics
 
     def predict_step(self, batch, batch_idx: int, dataloader_idx: int = 0):
-        f_0 = batch[:, :, 0:1, :]
-        x = batch[:, :, 1:, :]
-        pred = self(x)
+        inp, tar, inp_wav, tar_wav, mask = batch
+        f_0 = inp[:, :, 0:1, :]
+        x_in = inp[:, :, 1:, :]
+        mask = mask[:, :, 1:, :]
+        pred = self(x_in, mask)
         pred = torch.cat([f_0, pred], dim=2)
-        pred = torch.istft(pred.squeeze(0).permute(1, 2, 0), self.window_size, self.hop_size,
-                           window=self.window.to(pred.device))
-        return pred
+        pred = torch.view_as_complex(pred.permute(0, 2, 3, 1).contiguous())
+        pred = torch.istft(pred, self.window_size, self.hop_size, window=self.window.to(pred.device))
+        return pred, inp_wav
 
     def configure_optimizers(self):
-        optimizer = torch.optim.Adam(self.parameters(), lr=self.learning_rate)
-        lr_scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(optimizer, patience=CONFIG.TRAIN.patience,
+        self.optimizer = torch.optim.Adam(self.parameters(), lr=self.learning_rate)
+        lr_scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(self.optimizer, patience=CONFIG.TRAIN.patience,
                                                                   factor=CONFIG.TRAIN.factor, verbose=True)
 
         scheduler = {
             'scheduler': lr_scheduler,
             'reduce_on_plateau': True,
-            'monitor': 'val_loss'
+            'monitor': CONFIG.WANDB.monitor
         }
-        return [optimizer], [scheduler]
+        return [self.optimizer], [scheduler]
 
 
 class OnnxWrapper(pl.LightningModule):

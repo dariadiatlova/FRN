@@ -52,6 +52,10 @@ def pad(sig, length):
     return sig
 
 
+def pad_mask(mask, target_size):
+    pass
+
+
 class MaskGenerator:
     def __init__(self, is_train=True, probs=((0.9, 0.1), (0.5, 0.1), (0.5, 0.5))):
         '''
@@ -151,7 +155,6 @@ class NonBlindTestLoader(Dataset):
         self.sr = CONFIG.DATA.sr
         self.stride = CONFIG.DATA.stride
         self.window_size = CONFIG.DATA.window_size
-        self.audio_chunk_len = CONFIG.DATA.audio_chunk_len
         self.p_size = CONFIG.NBTEST.packet_size  # 20ms
         self.hann = torch.sqrt(torch.hann_window(self.window_size))
         assert len(self.trace_list) == len(self.data_list)
@@ -159,33 +162,42 @@ class NonBlindTestLoader(Dataset):
     def __len__(self):
         return len(self.data_list)
 
+    def _create_mask_for_causal_inference(self, mask, sig):
+        """
+        mask: np.ndarray shape (audio_len // p_size)
+        sig: torch.FloatTensor, stft res shape C, F, T
+        return: mask of shape C, F, T, where original mask is twice repeated and padded if needed along T dim
+        """
+        mask = torch.tensor(mask, dtype=torch.long).squeeze(-1)
+        C, F, T = sig.shape
+        mask_target_size = mask.shape[0] * 2
+        mask = mask.repeat(2, 1).T.reshape(-1)
+        if T - mask.shape[0] == 1:
+            mask = torch.cat([mask, torch.tensor([0])])
+        reshaped = torch.repeat_interleave(mask, F, dim=0).reshape(T, F)
+        reshaped = torch.stack([reshaped for _ in range(C)]).permute(0, 2, 1)
+        return reshaped.detach()
+
     def __getitem__(self, index):
         target = load_audio(self.data_list[index], sample_rate=self.sr)
         target = target[:, :(target.shape[1] // self.p_size) * self.p_size]
-
         sig = np.reshape(target, (-1, self.p_size)).copy()
         if self.mask == 'real':
             mask = self.trace_list[index]
             assert sig.shape[0] == mask.shape[0]
-            # import pdb
-            # pdb.set_trace()
             mask = np.tile(mask, (1, sig.shape[1])).reshape(-1, mask.shape[0]).T
-            # print("SIG", sig.shape)
-            # print("MASK", mask.shape)
             assert sig.shape == mask.shape
         else:
             mask = self.mask_generator.gen_mask(len(sig), seed=index)[:, np.newaxis]
         sig *= mask
         sig = torch.tensor(sig).reshape(-1)
-
         target = torch.tensor(target).squeeze(0)
-
         sig_wav = sig.clone()
         target_wav = target.clone()
-
         target = torch.view_as_real(torch.stft(target, self.window_size, self.stride, window=self.hann, return_complex=True)).permute(2, 0, 1)
         sig = torch.view_as_real(torch.stft(sig, self.window_size, self.stride, window=self.hann, return_complex=True)).permute(2, 0, 1)
-        return sig.float(), target.float(), sig_wav, target_wav, mask
+        reshaped_mask = self._create_mask_for_causal_inference(mask, sig)
+        return sig.float(), target.float(), sig_wav, target_wav, reshaped_mask
 
 
 class BlindTestLoader(Dataset):
@@ -266,6 +278,22 @@ class TrainDataset(Dataset):
             sig = np.hstack((sig, padding))
         return sig
 
+    def _create_mask_for_causal_inference(self, mask, sig):
+        """
+        mask: np.ndarray shape (audio_len // p_size)
+        sig: torch.FloatTensor, stft res shape C, F, T
+        return: mask of shape C, F, T, where original mask is twice repeated and padded if needed along T dim
+        """
+        mask = torch.tensor(mask, dtype=torch.long).squeeze(-1)
+        C, F, T = sig.shape
+        mask_target_size = mask.shape[0] * 2
+        mask = mask.repeat(2, 1).T.reshape(-1)
+        if T - mask.shape[0] == 1:
+            mask = torch.cat([mask, torch.tensor([0])])
+        reshaped = torch.repeat_interleave(mask, F, dim=0).reshape(T, F)
+        reshaped = torch.stack([reshaped for _ in range(C)]).permute(0, 2, 1)
+        return reshaped.detach()
+
     def __getitem__(self, index):
         sig = self.fetch_audio(index)
 
@@ -283,4 +311,5 @@ class TrainDataset(Dataset):
             torch.stft(target, self.chunk_len, self.stride, window=self.hann, return_complex=True)).permute(2, 0, 1).float()
         sig = torch.view_as_real(torch.stft(sig, self.chunk_len, self.stride, window=self.hann, return_complex=True))
         sig = sig.permute(2, 0, 1).float()
-        return sig, target, mask
+        reshaped_mask = self._create_mask_for_causal_inference(mask, sig)
+        return sig, target, reshaped_mask
