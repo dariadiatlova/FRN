@@ -9,7 +9,7 @@ from pytorch_lightning.utilities.model_summary import summarize
 from torch.utils.data import DataLoader
 
 from config import CONFIG
-from dataset import TrainDataset, TestLoader, BlindTestLoader, NonBlindTestLoader
+from dataset import TrainDataset, TestLoader, BlindTestLoader, NonBlindTestLoader, SaintyCheckLoader
 from torch.utils.data import DataLoader
 from models.frn import PLCModel, OnnxWrapper
 from pytorch_lightning.loggers import WandbLogger
@@ -50,8 +50,12 @@ def resume(train_dataset, val_dataset, version):
 
 
 def train():
-    train_dataset = TrainDataset('train')
-    val_dataset = TrainDataset('val')
+    if CONFIG.TRAIN.sainty_check:
+        train_dataset = SaintyCheckLoader(size=CONFIG.TRAIN.sainty_size)
+        val_dataset = train_dataset
+    else:
+        train_dataset = TrainDataset('train')
+        val_dataset = TrainDataset('val')
     args.dirpath = args.dirpath if args.dirpath is not None else CONFIG.LOG.log_dir
     checkpoint_callback = ModelCheckpoint(dirpath=args.dirpath,
                                           monitor=CONFIG.WANDB.monitor, mode='min', verbose=True,
@@ -151,26 +155,25 @@ if __name__ == '__main__':
                 mkdir_p(CONFIG.NBTEST.out_dir_orig)
                 model.cuda(device=0)
                 model.eval()
-                testset = NonBlindTestLoader()
+                testset = NonBlindTestLoader(size=CONFIG.NBTEST.to_synthesize)
+                # import pdb
+                # pdb.set_trace()
                 test_loader = DataLoader(testset, batch_size=1, num_workers=4)
                 trainer = pl.Trainer(accelerator='gpu', devices=1, enable_checkpointing=False, logger=False)
-                data_lists = [i for i in test_loader.dataset.data_list]
+                data_lists = [i for i in testset.data_list]
                 result = trainer.predict(model, test_loader, return_predictions=True)
-                import pdb
-                pdb.set_trace()
-                idx = 0
-                for j, in range(len(data_lists)):
-                    if j > 3:
-                        break
-                    if j % 2 != 0:
-                        idx += 1
-                    pred = result[idx]
-                    inp_wav = result[idx + 1]
+                # import pdb
+                # pdb.set_trace()
+                for j in range(len(testset)):
+                    pred = result[j][0]
+                    inp_wav = result[j][1]
                     # save files
-                    out_path = os.path.join(CONFIG.NBTEST.out_dir, os.path.basename(data_lists[j]))
+                    out_path = os.path.join(CONFIG.NBTEST.out_dir, os.path.basename(testset.data_list[j]))
+                    print(out_path)
                     sf.write(out_path, pred.squeeze(0).cpu().numpy(), samplerate=CONFIG.DATA.sr, subtype='PCM_16')
-                    out_orig_path = os.path.join(CONFIG.NBTEST.out_dir_orig, os.path.basename(data_lists[j]))
+                    out_orig_path = os.path.join(CONFIG.NBTEST.out_dir_orig, os.path.basename(testset.data_list[j]))
                     sf.write(out_orig_path, inp_wav.squeeze(0).cpu().numpy(), samplerate=CONFIG.DATA.sr, subtype='PCM_16')
+                    print(out_orig_path)
         else:
             onnx_path = 'lightning_logs/version_{}/checkpoints/frn.onnx'.format(str(args.version))
             to_onnx(model, onnx_path)

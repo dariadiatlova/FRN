@@ -2,10 +2,12 @@ class CONFIG:
     gpus = "0"  # List of gpu devices
 
     class TRAIN:
-        batch_size = 192  # number of audio files per batch
-        lr = 1e-4  # learning rate
-        limit_val_batches = 2
-        epochs = 300  # max training epochs
+        sainty_check = True  # if True will try to remember <sainty_size> samples, from SaintyCheckLoader
+        sainty_size = 1 # number of samples to remember
+        batch_size = 1  # number of audio files per batch
+        lr = 1e-2  # learning rate
+        limit_val_batches = 1
+        epochs = 1000  # max training epochs
         check_val_every_n_epoch = 10 # run validation each
         workers = 1  # number of dataloader workers
         val_split = 0.02  # validation set proportion
@@ -52,8 +54,8 @@ class CONFIG:
             trace_path = 'test_samples/blind/lossy_singals'  # must be clarified if masking = 'real'
 
     class LOG:
-        log_dir = 'lightning_logs'  # checkpoint and log directory
-        sample_path = 'audio_samples'  # path to save generated audio samples in evaluation.
+        log_dir = 'cosine_sainty_lightning_logs'  # checkpoint and log directory
+        sample_path = 'cosine_sainty_audio_samples'  # path to save generated audio samples in evaluation.
 
     class TEST:
         in_dir = 'blind/lossy_signals'  # path to test audio inputs
@@ -62,6 +64,7 @@ class CONFIG:
         out_dir_orig = 'blind/lossy_signals48k'
 
     class NBTEST:
+        to_synthesize = 1 # first n samples from real_dir will be synthesized with the loss in loss_path
         packet_size = 960  # 20ms
         repeat_factor = 3 # will load real mask for orig sample rate, how much should repeat each sample (diff target sr / orig sr)
         transition_probs = [(0.9, 0.1)]  # (0.9, 0.1) ~ 10%; (0.8, 0.2) ~ 20%; (0.6, 0.4) ~ 40%
@@ -74,7 +77,7 @@ class CONFIG:
 
     class WANDB:
         project = "FRN"
-        log_n_audios = 16
+        log_n_audios = 1
         monitor = "train_stft_loss"
 
 

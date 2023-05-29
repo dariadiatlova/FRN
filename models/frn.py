@@ -230,15 +230,18 @@ class PLCModel(pl.LightningModule):
 
     def configure_optimizers(self):
         self.optimizer = torch.optim.Adam(self.parameters(), lr=self.learning_rate)
-        lr_scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(self.optimizer, patience=CONFIG.TRAIN.patience,
-                                                                  factor=CONFIG.TRAIN.factor, verbose=True)
+        # lr_scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(self.optimizer, patience=CONFIG.TRAIN.patience,
+        #                                                           factor=CONFIG.TRAIN.factor, verbose=True)
+        lr_scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(self.optimizer, T_max=CONFIG.TRAIN.epochs,
+                                                                  eta_min=1e-8, verbose=True)
+        # lr_scheduler = torch.optim.lr_scheduler.ExponentialLR(self.optimizer, gamma=9e-1, last_epoch=CONFIG.TRAIN.epochs)
 
-        scheduler = {
-            'scheduler': lr_scheduler,
-            'reduce_on_plateau': True,
-            'monitor': CONFIG.WANDB.monitor
-        }
-        return [self.optimizer], [scheduler]
+        # scheduler = {
+        #     'scheduler': lr_scheduler,
+        #     # 'reduce_on_plateau': True,
+        #     'monitor': CONFIG.WANDB.monitor
+        # }
+        return [self.optimizer], [lr_scheduler]
 
 
 class OnnxWrapper(pl.LightningModule):
