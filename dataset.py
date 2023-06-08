@@ -23,21 +23,24 @@ def load_audio(
         sample_rate: int = 16000,
         chunk_len=None,
 ):
-    with sf.SoundFile(path) as f:
-        sr = f.samplerate
-        audio_len = f.frames
+    try:
+        with sf.SoundFile(path) as f:
+            sr = f.samplerate
+            audio_len = f.frames
 
-        if chunk_len is not None and chunk_len < audio_len:
-            start_index = torch.randint(0, audio_len - chunk_len, (1,))[0]
-            frames = f._prepare_read(start_index, start_index + chunk_len, -1)
-            audio = f.read(frames, always_2d=True, dtype="float32")
+            if chunk_len is not None and chunk_len < audio_len:
+                start_index = torch.randint(0, audio_len - chunk_len, (1,))[0]
+                frames = f._prepare_read(start_index, start_index + chunk_len, -1)
+                audio = f.read(frames, always_2d=True, dtype="float32")
 
-        else:
-            audio = f.read(always_2d=True, dtype="float32")
+            else:
+                audio = f.read(always_2d=True, dtype="float32")
 
-    if sr != sample_rate:
-        audio = librosa.resample(np.squeeze(audio), orig_sr=sr, target_sr=sample_rate)[:, np.newaxis]
-
+        if sr != sample_rate:
+            audio = librosa.resample(np.squeeze(audio), orig_sr=sr, target_sr=sample_rate)[:, np.newaxis]
+    except Exception:
+        print(f"Error loading audio from {path}, substitute with zeros")
+        audio = np.zeros(chunk_len)[:, np.newaxis]
     return audio.T
 
 
@@ -343,7 +346,7 @@ class TrainDataset(Dataset):
         sig: torch.FloatTensor, stft res shape C, F, T
         return: mask of shape C, F, T, where original mask is twice repeated and padded if needed along T dim
         """
-        mask = torch.tensor(mask, dtype=torch.long).squeeze(-1)
+        mask = torch.tensor(mask, dtype=torch.long, requires_grad=False).squeeze(-1)
         C, F, T = sig.shape
         mask_target_size = mask.shape[0] * 2
         mask = mask.repeat(2, 1).T.reshape(-1)
@@ -351,20 +354,20 @@ class TrainDataset(Dataset):
             mask = torch.cat([mask, torch.tensor([0])])
         reshaped = torch.repeat_interleave(mask, F, dim=0).reshape(T, F)
         reshaped = torch.stack([reshaped for _ in range(C)]).permute(0, 2, 1)
-        return reshaped.detach()
+        return reshaped #.detach()
 
     def __getitem__(self, index):
         sig = self.fetch_audio(index)
 
         sig = sig.reshape(-1).astype(np.float32)
 
-        target = torch.tensor(sig.copy())
+        target = torch.tensor(sig.copy(), requires_grad=False)
         p_size = random.choice(self.p_sizes)
 
         sig = np.reshape(sig, (-1, p_size))
         mask = self.mask_generator.gen_mask(len(sig), seed=index)[:, np.newaxis]
         sig *= mask
-        sig = torch.tensor(sig.copy()).reshape(-1)
+        sig = torch.tensor(sig.copy(), requires_grad=False).reshape(-1)
 
         target = torch.view_as_real(
             torch.stft(target, self.chunk_len, self.stride, window=self.hann, return_complex=True)).permute(2, 0, 1).float()

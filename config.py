@@ -1,19 +1,24 @@
 class CONFIG:
-    gpus = "0"  # List of gpu devices
+    gpus = "0,1,2,3"  # List of gpu devices
 
     class TRAIN:
-        sainty_check = True  # if True will try to remember <sainty_size> samples, from SaintyCheckLoader
+        sainty_check = False  # if True will try to remember <sainty_size> samples, from SaintyCheckLoader
         sainty_size = 1 # number of samples to remember
-        batch_size = 1  # number of audio files per batch
+        batch_size = 16  # number of audio files per batch
         lr = 1e-2  # learning rate
-        limit_val_batches = 1
-        epochs = 1000  # max training epochs
-        check_val_every_n_epoch = 10 # run validation each
-        workers = 1  # number of dataloader workers
+        limit_val_batches = 32
+        epochs = 25  # max training epochs
+        check_val_every_n_epoch = 20 # run validation each
+        workers = 0  # number of dataloader workers
         val_split = 0.02  # validation set proportion
         clipping_val = 1.0  # gradient clipping value
         patience = 3  # learning rate scheduler's patience
         factor = 0.5  # learning rate reduction factor
+        # DISCRIMINATOR
+        disc_decay = 0.9995
+        disc_lr = 2e-4
+        disc_adam_b1 = 0.8
+        disc_adam_b2 = 0.99
 
     # Model config
     class MODEL:
@@ -25,15 +30,15 @@ class CONFIG:
 
     # Dataset config
     class DATA:
-        dataset = 'vctk'  # dataset to use
+        dataset = 'dns_fullband'  # dataset to use
         '''
         Dictionary that specifies paths to root directories and train/test text files of each datasets.
         'root' is the path to the dataset and each line of the train.txt/test.txt files should contains the path to an
         audio file from 'root'. 
         '''
-        data_dir = {'vctk': {'root': 'data/vctk/wav48',
-                             'train': "data/vctk/train.txt",
-                             'test': "data/vctk/test.txt"},
+        data_dir = {'dns_fullband': {'root': 'data/dns_fullband/',
+                                     'train': "data/large_fullband_train.txt",
+                                     'test': "data/large_fullband_test.txt"},
                     }
 
         assert dataset in data_dir.keys(), 'Unknown dataset.'
@@ -44,7 +49,9 @@ class CONFIG:
 
         class TRAIN:
             packet_sizes = [960]  # 256, 512, 768, 960, 1024, 1536 packet sizes for training. All sizes should be divisible by 'audio_chunk_len'
-            transition_probs = ((0.9, 0.1), (0.5, 0.1), (0.5, 0.5))  # list of trainsition probs for Markow Chain
+            transition_probs = ((0.97, 0.03), (0.95, 0.05), (0.9, 0.1),
+                                (0.87, 0.13), (0.85, 0.15), (0.8, 0.2),
+                                (0.77, 0.23), (0.75, 0.25), (0.7, 0.3)) #(0.5, 0.1), (0.5, 0.5))   list of trainsition probs for Markow Chain
 
         class EVAL:
             packet_size = 960  # 20ms
@@ -54,8 +61,8 @@ class CONFIG:
             trace_path = 'test_samples/blind/lossy_singals'  # must be clarified if masking = 'real'
 
     class LOG:
-        log_dir = 'cosine_sainty_lightning_logs'  # checkpoint and log directory
-        sample_path = 'cosine_sainty_audio_samples'  # path to save generated audio samples in evaluation.
+        log_dir = 'fullband_train_lightning_logs'  # checkpoint and log directory
+        sample_path = 'fullband_train_audio_samples'  # path to save generated audio samples in evaluation.
 
     class TEST:
         in_dir = 'blind/lossy_signals'  # path to test audio inputs
@@ -77,7 +84,7 @@ class CONFIG:
 
     class WANDB:
         project = "FRN"
-        log_n_audios = 1
+        log_n_audios = 16
         monitor = "train_stft_loss"
 
 

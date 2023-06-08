@@ -1,6 +1,7 @@
 import os
 
 import librosa
+import itertools
 import numpy as np
 import pytorch_lightning as pl
 import soundfile as sf
@@ -14,6 +15,7 @@ from PLCMOS.plc_mos import PLCMOSEstimator
 from config import CONFIG
 from loss import Loss
 from models.blocks import Encoder, Predictor
+from models.hifi import MultiPeriodDiscriminator, MultiScaleDiscriminator, discriminator_loss
 from utils.utils import visualize, LSD
 from utils.tblogger import WandbSpectrogramLogging
 
@@ -55,6 +57,8 @@ class PLCModel(pl.LightningModule):
 
         self.encoder = Encoder(in_dim=self.window_size, dim=self.enc_in_dim, depth=self.enc_layers,
                                mlp_dim=self.enc_dim)
+        self.mpd = MultiPeriodDiscriminator()
+        self.msd = MultiScaleDiscriminator()
 
         self.loss = Loss()
         self.window = torch.sqrt(torch.hann_window(self.window_size))
@@ -98,16 +102,37 @@ class PLCModel(pl.LightningModule):
         feat = feat + x
         return feat, prev_mag, predictor_state, mlp_state
 
-    def training_step(self, batch, batch_idx):
+    def training_step(self, batch, batch_idx, optimizer_idx):
+        # train generator
         inp, tar, mask = batch
         f_0 = inp[:, :, 0:1, :]
         x = inp[:, :, 1:, :]
         mask = mask[:, :, 1:, :]
         x = self(x, mask)
         x = torch.cat([f_0, x], dim=2)
-        loss = self.loss(x, tar)
-        log_dict = {"train_stft_loss": loss.item(), "optimizer_rate/optimizer": self.optimizer.param_groups[0]['lr']}
-        self.log_dict(log_dict, on_step=True, on_epoch=False)
+        # train generator
+        if optimizer_idx == 0:
+            loss = self.loss(x, tar)
+            log_dict = {"train_stft_loss": loss.item(),
+                        "optimizer_rate/optimizer": self.optimizer.param_groups[0]['lr']}
+            self.log_dict(log_dict, on_step=True, on_epoch=False)
+        # train discriminator
+        else:
+            # print(tar.shape, "tar shape")
+            y = torch.istft(tar.permute(0, 2, 3, 1), self.window_size, self.hop_size,
+                            window=self.window.to(tar.device)).unsqueeze(1)
+            # print(x.shape, "x shape")
+            y_hat = torch.istft(x.permute(0, 2, 3, 1), self.window_size, self.hop_size,
+                                window=self.window.to(x.device)).unsqueeze(1)
+            mpd_out_y, mpd_out_y_hat, _, _ = self.mpd(y, y_hat.detach())
+            mpd_loss = discriminator_loss(mpd_out_y, mpd_out_y_hat)[0]
+            msd_out_y, msd_out_y_hat, _, _ = self.msd(y, y_hat.detach())
+            msd_loss = discriminator_loss(msd_out_y, msd_out_y_hat)[0]
+            loss = mpd_loss + msd_loss
+            log_dict = {"train_mpd_loss": mpd_loss.item(),
+                        "train_msd_loss": msd_loss.item(),
+                        "optimizer_rate/disc_optimizer": self.disc_optimizer.param_groups[0]['lr']}
+            self.log_dict(log_dict, on_step=True, on_epoch=False)
         return loss
 
     def validation_step(self, val_batch, batch_idx):
@@ -230,6 +255,10 @@ class PLCModel(pl.LightningModule):
 
     def configure_optimizers(self):
         self.optimizer = torch.optim.Adam(self.parameters(), lr=self.learning_rate)
+        self.disc_optimizer = torch.optim.AdamW(itertools.chain(self.msd.parameters(), self.mpd.parameters()),
+                                                CONFIG.TRAIN.disc_lr,
+                                                betas=(CONFIG.TRAIN.disc_adam_b1, CONFIG.TRAIN.disc_adam_b2))
+        disc_scheduler = torch.optim.lr_scheduler.ExponentialLR(self.disc_optimizer, gamma=CONFIG.TRAIN.disc_decay)
         # lr_scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(self.optimizer, patience=CONFIG.TRAIN.patience,
         #                                                           factor=CONFIG.TRAIN.factor, verbose=True)
         lr_scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(self.optimizer, T_max=CONFIG.TRAIN.epochs,
@@ -241,7 +270,7 @@ class PLCModel(pl.LightningModule):
         #     # 'reduce_on_plateau': True,
         #     'monitor': CONFIG.WANDB.monitor
         # }
-        return [self.optimizer], [lr_scheduler]
+        return [self.optimizer, self.disc_optimizer], [lr_scheduler, disc_scheduler]
 
 
 class OnnxWrapper(pl.LightningModule):

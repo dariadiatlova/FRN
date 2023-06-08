@@ -56,11 +56,15 @@ def train():
     else:
         train_dataset = TrainDataset('train')
         val_dataset = TrainDataset('val')
+    a, b, c = val_dataset[0]
+    # print(a.requires_grad, "A")
+    # print(b.requires_grad, "B")
+    # print(c.requires_grad, "C")
     args.dirpath = args.dirpath if args.dirpath is not None else CONFIG.LOG.log_dir
     checkpoint_callback = ModelCheckpoint(dirpath=args.dirpath,
                                           monitor=CONFIG.WANDB.monitor, mode='min', verbose=True,
                                           filename='frn-{epoch:02d}-{val_loss:.4f}', save_weights_only=False)
-    gpus = CONFIG.gpus.split(',')
+    gpus = list(map(int, CONFIG.gpus.split(',')))
     logger = WandbLogger(project=CONFIG.WANDB.project, log_model=False) # TO DO REFACTOR CONFIG
     if args.version is not None:
         model = resume(train_dataset, val_dataset, args.version)
@@ -77,7 +81,8 @@ def train():
     logger.watch(model, log_graph=False)
     trainer = pl.Trainer(logger=logger,
                          gradient_clip_val=CONFIG.TRAIN.clipping_val,
-                         gpus=len(gpus),
+                         gpus=gpus,
+                         strategy="ddp" if len(gpus) > 1 else None,
                          max_epochs=CONFIG.TRAIN.epochs,
                          accelerator="gpu" if len(gpus) > 1 else None,
                          callbacks=[checkpoint_callback],
@@ -87,9 +92,10 @@ def train():
     print(
         'Dataset: {}, Train files: {}, Val files {}'.format(CONFIG.DATA.dataset, len(train_dataset), len(val_dataset)))
     train_loader = DataLoader(train_dataset, shuffle=True, batch_size=CONFIG.TRAIN.batch_size,
-                              num_workers=CONFIG.TRAIN.workers, persistent_workers=True)
+                              num_workers=CONFIG.TRAIN.workers) #persistent_workers=True
     val_loader = DataLoader(val_dataset, shuffle=False, batch_size=CONFIG.TRAIN.batch_size,
-                            num_workers=CONFIG.TRAIN.workers, persistent_workers=True)
+                            num_workers=CONFIG.TRAIN.workers) #persistent_workers=True
+    torch.cuda.empty_cache()
     trainer.fit(model, train_loader, val_loader)
 
 

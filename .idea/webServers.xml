@@ -1,0 +1,21 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<project version="4">
+  <component name="WebServers">
+    <option name="servers">
+      <webServer id="0b5fb064-59d4-4c6e-abb7-936375f3693c" name="root@a100-1:22 data2">
+        <fileTransfer rootFolder="/data2/dasha/repos" accessType="SFTP" host="a100-1" port="22" sshConfigId="29cd19d4-6816-4c83-a278-2b96360a4dc2" sshConfig="root@a100-1:22 agent" authAgent="true">
+          <advancedOptions>
+            <advancedOptions dataProtectionLevel="Private" passiveMode="true" shareSSLContext="true" />
+          </advancedOptions>
+        </fileTransfer>
+      </webServer>
+      <webServer id="dfb68137-22c7-4e68-9512-29c1b7dbc5e4" name="root@a100-1:22 myfork">
+        <fileTransfer rootFolder="/data2/dasha/repos/myfork" accessType="SFTP" host="a100-1" port="22" sshConfigId="29cd19d4-6816-4c83-a278-2b96360a4dc2" sshConfig="root@a100-1:22 agent" authAgent="true">
+          <advancedOptions>
+            <advancedOptions dataProtectionLevel="Private" passiveMode="true" shareSSLContext="true" />
+          </advancedOptions>
+        </fileTransfer>
+      </webServer>
+    </option>
+  </component>
+</project>
