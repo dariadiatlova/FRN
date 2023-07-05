@@ -78,6 +78,8 @@ class PLCModel(pl.LightningModule):
             step = x[i].to(self.device)
             feat, mlp_state = self.encoder(step, mlp_state)
             prev_mag, predictor_state = self.predictor(prev_mag, predictor_state)
+            assert prev_mag is None, f"{feat.shape}, {prev_mag.shape}, {x.shape}, {predictor_state.shape}" \
+                                     f"{self.predictor}"
             feat = torch.cat((feat, prev_mag), 1)
             feat = self.joiner(feat)
             feat = feat + step
