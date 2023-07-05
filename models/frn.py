@@ -68,7 +68,7 @@ class PLCModel(pl.LightningModule):
         #     Output: real-imaginary
         #     """
         B, C, F, T = x.shape
-        x = x.permute(3, 0, 1, 2).unsqueeze(-1)
+        x = x.permute(3, 0, 1, 2).unsqueeze(-1) #T B C F
         expanded_mask = mask.permute(1, 0).unsqueeze(2).repeat(1, 1, C).unsqueeze(3).repeat(1, 1, 1, F)
         prev_mag = torch.zeros((B, 1, F, 1), device=x.device)
         predictor_state = torch.zeros((2, self.predictor.lstm_layers, B, self.predictor.lstm_dim),
@@ -79,9 +79,9 @@ class PLCModel(pl.LightningModule):
             step = x[i].to(self.device)
             feat, mlp_state = self.encoder(step, mlp_state)
             prev_mag, predictor_state = self.predictor(prev_mag, predictor_state)
-            assert feat.shape[0] == prev_mag.shape[0], f"{feat.shape}, {prev_mag.shape}"
-            assert feat.shape[2] == prev_mag.shape[2], f"{feat.shape}, {prev_mag.shape}"
-            assert feat.shape[3] == prev_mag.shape[3], f"{feat.shape}, {prev_mag.shape}"
+            assert feat.shape[0] == prev_mag.shape[0], f"{feat.shape}, {prev_mag.shape}, {x.shape}"
+            assert feat.shape[2] == prev_mag.shape[2], f"{feat.shape}, {prev_mag.shape}, {x.shape}"
+            assert feat.shape[3] == prev_mag.shape[3], f"{feat.shape}, {prev_mag.shape}, {x.shape}"
             feat = torch.cat((feat, prev_mag), dim=1)
             feat = self.joiner(feat)
             feat = feat + step
