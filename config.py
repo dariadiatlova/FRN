@@ -7,7 +7,7 @@ class CONFIG:
         batch_size = 96  # number of audio files per batch
         lr = 1e-2  # learning rate
         limit_val_batches = 4
-        epochs = 300  # max training epochs
+        epochs = 100  # max training epochs
         check_val_every_n_epoch = 5 # run validation each
         workers = 1  # number of dataloader workers
         val_split = 0.02  # validation set proportion
@@ -37,7 +37,7 @@ class CONFIG:
 
                     'dns_fullband': {'root': 'data/dns_fullband/',
                                      'train': "data/large_fullband_train.txt",
-                                     'test': "data/large_fullband_train.txt"},
+                                     'test': "data/large_fullband_test.txt"},
                     }
 
         assert dataset in data_dir.keys(), 'Unknown dataset.'
@@ -58,8 +58,8 @@ class CONFIG:
             trace_path = 'test_samples/blind/lossy_singals'  # must be clarified if masking = 'real'
 
     class LOG:
-        log_dir = 'lightning_logs'  # checkpoint and log directory
-        sample_path = 'evaluation_149_audio_samples'  # path to save generated audio samples in evaluation.
+        log_dir = 'masked_lightning_logs'  # checkpoint and log directory
+        sample_path = ''  # path to save generated audio samples in evaluation.
 
     class TEST:
         in_dir = 'blind/lossy_signals'  # path to test audio inputs

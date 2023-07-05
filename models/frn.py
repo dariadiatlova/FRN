@@ -64,12 +64,12 @@ class PLCModel(pl.LightningModule):
     def forward(self, x, mask):
         #     """
         #     Input: real-imaginary; shape (B, 2, F, T); F = hop_size
-        #            mask; shape (B, seq_len, p_dim)
+        #            mask; shape (B, seq_len)
         #     Output: real-imaginary
         #     """
         B, C, F, T = x.shape
-        mask = mask.permute(3, 0, 1, 2).unsqueeze(-1)
         x = x.permute(3, 0, 1, 2).unsqueeze(-1)
+        expanded_mask = mask.permute(1, 0).unsqueeze(2).repeat(1, 1, C).unsqueeze(3).repeat(1, 1, 1, F)
         prev_mag = torch.zeros((B, 1, F, 1), device=x.device)
         predictor_state = torch.zeros((2, self.predictor.lstm_layers, B, self.predictor.lstm_dim),
                                       device=x.device)
@@ -79,11 +79,14 @@ class PLCModel(pl.LightningModule):
             step = x[i].to(self.device)
             feat, mlp_state = self.encoder(step, mlp_state)
             prev_mag, predictor_state = self.predictor(prev_mag, predictor_state)
-            feat = torch.cat((feat, prev_mag), 1)
+            assert feat.shape[0] == prev_mag.shape[0], f"{feat.shape}, {prev_mag.shape}"
+            assert feat.shape[2] == prev_mag.shape[2], f"{feat.shape}, {prev_mag.shape}"
+            assert feat.shape[3] == prev_mag.shape[3], f"{feat.shape}, {prev_mag.shape}"
+            feat = torch.cat((feat, prev_mag), dim=1)
             feat = self.joiner(feat)
             feat = feat + step
             # if packet is not lost use gt
-            feat = torch.where(mask[i] == True, x[i], feat)
+            feat = torch.where(mask[i] > 0, x[i], feat)
             result.append(feat)
             prev_mag = torch.linalg.norm(feat, dim=1, ord=1, keepdims=True)  # compute magnitude
         output = torch.cat(result, -1)
@@ -103,7 +106,7 @@ class PLCModel(pl.LightningModule):
         inp, tar, mask = batch
         f_0 = inp[:, :, 0:1, :]
         x = inp[:, :, 1:, :]
-        mask = mask[:, :, 1:, :]
+        # mask = mask[:, :, 1:, :]
         x = self(x, mask)
         x = torch.cat([f_0, x], dim=2)
         loss = self.loss(x, tar)
@@ -115,7 +118,7 @@ class PLCModel(pl.LightningModule):
         inp, tar, mask = val_batch
         f_0 = inp[:, :, 0:1, :]
         x_in = inp[:, :, 1:, :]
-        mask = mask[:, :, 1:, :]
+        # mask = mask[:, :, 1:, :]
 
         pred = self(x_in, mask)
         pred = torch.cat([f_0, pred], dim=2)

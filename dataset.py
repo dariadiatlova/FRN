@@ -18,6 +18,11 @@ np.random.seed(0)
 rng = default_rng()
 
 
+def slice_into_frames(amplitudes, window_length, hop_length) -> np.ndarray:
+    return librosa.core.spectrum.util.frame(np.pad(amplitudes, int(window_length // 2), mode='reflect'),
+                                            frame_length=window_length, hop_length=hop_length)
+
+
 def load_audio(
         path,
         sample_rate: int = 16000,
@@ -36,9 +41,9 @@ def load_audio(
             audio = f.read(always_2d=True, dtype="float32")
 
     if sr != sample_rate:
-        audio = librosa.resample(np.squeeze(audio), orig_sr=sr, target_sr=sample_rate)[:, np.newaxis]
+        audio = librosa.resample(np.squeeze(audio), orig_sr=sr, target_sr=sample_rate)
 
-    return audio.T
+    return audio.squeeze(-1)
 
 
 def pad(sig, length):
@@ -50,10 +55,6 @@ def pad(sig, length):
         start = random.randint(0, sig.shape[1] - length)
         sig = sig[:, start:start + length]
     return sig
-
-
-def pad_mask(mask, target_size):
-    pass
 
 
 class MaskGenerator:
@@ -313,10 +314,9 @@ class TrainDataset(Dataset):
         self.p_sizes = CONFIG.DATA.TRAIN.packet_sizes
         self.mode = mode
         self.sr = CONFIG.DATA.sr
-        self.window = CONFIG.DATA.audio_chunk_len
+        self.window = CONFIG.DATA.window_size
         self.stride = CONFIG.DATA.stride
-        self.chunk_len = CONFIG.DATA.window_size
-        self.hann = torch.sqrt(torch.hann_window(self.chunk_len))
+        self.chunk_len = CONFIG.DATA.audio_chunk_len
         self.mask_generator = MaskGenerator(is_train=True, probs=CONFIG.DATA.TRAIN.transition_probs)
 
     def __len__(self):
@@ -332,15 +332,17 @@ class TrainDataset(Dataset):
         return target
 
     def fetch_audio(self, index):
-        sig = load_audio(self.data_list[index], sample_rate=self.sr, chunk_len=self.window)
-        while sig.shape[1] < self.window:
+        sig = load_audio(self.data_list[index], sample_rate=self.sr, chunk_len=self.chunk_len)
+        while sig.shape[0] < self.chunk_len:
             idx = torch.randint(0, len(self.data_list), (1,))[0]
-            pad_len = self.window - sig.shape[1]
+            pad_len = self.chunk_len - sig.shape[0]
             if pad_len < 0.02 * self.sr:
-                padding = np.zeros((1, pad_len), dtype=np.float)
+                padding = np.zeros(pad_len, dtype=np.float)
             else:
                 padding = load_audio(self.data_list[idx], sample_rate=self.sr, chunk_len=pad_len)
             sig = np.hstack((sig, padding))
+        curr_size = sig.shape[0]
+        sig = sig[:curr_size // self.p_sizes[0] * self.p_sizes[0]]
         return sig
 
     def _create_mask_for_causal_inference(self, mask, sig):
@@ -361,20 +363,32 @@ class TrainDataset(Dataset):
 
     def __getitem__(self, index):
         sig = self.fetch_audio(index)
+        assert len(sig) == self.chunk_len, f"Supposed to be equal to chunk len: {self.chunk_len}, got: {len(sig)}"
+        sliced_sig = slice_into_frames(sig, self.window, self.stride) # p_size, n_frames
+        # assert sig.shape[0] == sliced_sig.shape[0] * sliced_sig.shape[1], f"idk {sig.shape}, {sliced_sig.shape}"
+        mask_initial_dim = self.chunk_len // self.window
+        mask = self.mask_generator.gen_mask(mask_initial_dim, seed=index)
+        # assert len(mask) == sliced_sig.shape[1], f"wtf, mask gen shape: {mask.shape}, exp to be {sliced_sig.shape[1]}"
+        # assert len(sig) == sliced_sig.shape[1] * mask_repeat_dim, f"Expected: {len(sig)}, {sliced_sig.shape[1] * mask_repeat_dim}"
+        mask = torch.repeat_interleave(torch.tensor(mask.copy(), dtype=torch.float32), self.window)
+        masked_sig = sig * mask.cpu().numpy()
+        masked_sliced_sig = slice_into_frames(masked_sig, self.window, self.stride) # p_size, n_frames
+        sliced_mask = slice_into_frames(mask.cpu().numpy(), self.window, self.stride) # p_size, n_frames
+        assert sliced_mask.shape == masked_sliced_sig.shape, f"Supposed mask to be the same size as sig, " \
+                                                             f"after interleaved & slicing. " \
+                                                             f"Got mask: {sliced_mask.shape}, " \
+                                                             f"sig: {masked_sliced_sig.shape}."
+        # take min values intersections (if hop from present and absent signal, take as absent)
+        mask1d = torch.min(torch.tensor(sliced_mask), dim=0).values
 
-        sig = sig.reshape(-1).astype(np.float32)
-
-        target = torch.tensor(sig.copy())
-        p_size = random.choice(self.p_sizes)
-
-        sig = np.reshape(sig, (-1, p_size))
-        mask = self.mask_generator.gen_mask(len(sig), seed=index)[:, np.newaxis]
-        sig *= mask
-        sig = torch.tensor(sig.copy()).reshape(-1)
-
-        target = torch.view_as_real(
-            torch.stft(target, self.chunk_len, self.stride, window=self.hann, return_complex=True)).permute(2, 0, 1).float()
-        sig = torch.view_as_real(torch.stft(sig, self.chunk_len, self.stride, window=self.hann, return_complex=True))
-        sig = sig.permute(2, 0, 1).float()
-        reshaped_mask = self._create_mask_for_causal_inference(mask, sig)
-        return sig, target, reshaped_mask
+        # stft
+        weights_window = librosa.filters.get_window('hann', self.window, fftbins=True)
+        masked_stft = np.fft.rfft(np.einsum('ij, i -> ij', masked_sliced_sig, weights_window),
+                                  n=weights_window.shape[0],
+                                  axis=0)
+        masked_stft = torch.view_as_real(torch.tensor(masked_stft)).permute(2, 0, 1).float()
+        target_stft = np.fft.rfft(np.einsum('ij, i -> ij', sliced_sig, weights_window),
+                                  n=weights_window.shape[0],
+                                  axis=0)
+        target_stft = torch.view_as_real(torch.tensor(target_stft)).permute(2, 0, 1).float()
+        return masked_stft, target_stft, mask1d
