@@ -196,7 +196,7 @@ class SaintyCheckLoader(Dataset):
         target = torch.view_as_real(torch.stft(target, self.window_size, self.stride, window=self.hann, return_complex=True)).permute(2, 0, 1)
         sig = torch.view_as_real(torch.stft(sig, self.window_size, self.stride, window=self.hann, return_complex=True)).permute(2, 0, 1)
         reshaped_mask = self._create_mask_for_causal_inference(mask, sig)
-        return sig.float(), target.float(), reshaped_mask
+        # return sig.float(), target.float(), reshaped_mask
 
 
 class NonBlindTestLoader(Dataset):
@@ -245,18 +245,24 @@ class NonBlindTestLoader(Dataset):
         target = np.reshape(target, (-1, self.p_size)).copy()
         if self.mask == 'real':
             mask = self.trace_list[index][:, np.newaxis]
-            assert sig.shape[0] == mask.shape[0]
+            if sig.shape[0] != mask.shape[0]:
+                print(f"Sig shape: {sig.shape}, mask shape: {mask.shape}, sample: {self.data_list[index]}")
+                size_min = min(sig.shape[0], mask.shape[0])
+                sig = sig[:size_min, :]
+                mask = mask[:size_min, :]
+                target = target[:size_min, :]
         else:
             mask = self.mask_generator.gen_mask(len(sig), seed=index)[:, np.newaxis]
         sig *= mask
         sig = torch.tensor(sig).reshape(-1)
         target = torch.tensor(target).reshape(-1)
-        sig_wav = sig.clone()
-        target_wav = target.clone()
+        # sig_wav = sig.clone()
+        # target_wav = target.clone()
         target = torch.view_as_real(torch.stft(target, self.window_size, self.stride, window=self.hann, return_complex=True)).permute(2, 0, 1)
         sig = torch.view_as_real(torch.stft(sig, self.window_size, self.stride, window=self.hann, return_complex=True)).permute(2, 0, 1)
         reshaped_mask = self._create_mask_for_causal_inference(mask, sig)
-        return sig.float(), target.float(), sig_wav, target_wav, reshaped_mask
+        upsampled_mask = torch.repeat_interleave(torch.tensor(mask), 960)
+        return sig.float(), target.float(), reshaped_mask, Path(self.data_list[index]).name, upsampled_mask
 
 
 class BlindTestLoader(Dataset):

@@ -1,4 +1,5 @@
 import os
+from pathlib import Path
 
 import librosa
 import numpy as np
@@ -179,43 +180,64 @@ class PLCModel(pl.LightningModule):
         self.log_dict(log_dict, on_step=False, on_epoch=True, sync_dist=True)
 
     def test_step(self, test_batch, batch_idx):
-        inp, tar, inp_wav, tar_wav = test_batch
-        inp_wav = inp_wav.squeeze()
-        tar_wav = tar_wav.squeeze()
+        inp, tar, mask, name, orig_mask = test_batch
+        # print("Name:", name)
         f_0 = inp[:, :, 0:1, :]
-        x = inp[:, :, 1:, :]
-        pred = self(x)
+        x_in = inp[:, :, 1:, :]
+        mask = mask[:, :, 1:, :]
+        pred = self(x_in, mask)
+        # print(pred.shape)
         pred = torch.cat([f_0, pred], dim=2)
-        pred = torch.istft(pred.squeeze(0).permute(1, 2, 0), self.window_size, self.hop_size,
-                           window=self.window.to(pred.device))
-        stoi = self.stoi(pred, tar_wav)
+        loss = self.loss(pred, tar)
+        self.window = self.window.to(pred.device)
+        # print(out_dir_path)
+        pred = torch.view_as_complex(pred.permute(0, 2, 3, 1).contiguous())
+        pred = torch.istft(pred, self.window_size, self.hop_size, window=self.window)
+        y = torch.view_as_complex(tar.permute(0, 2, 3, 1).contiguous())
+        y = torch.istft(y, self.window_size, self.hop_size, window=self.window)
+        for i in range(inp.shape[0]):
+            y_i = y[i, :]
+            pred_i = pred[i, :]
+            orig_mask_i = orig_mask[i, :].squeeze(-1)
+            if CONFIG.NBTEST.use_mask:
+                assert len(orig_mask_i.shape) == 1
+                assert len(y_i.shape) == 1
+                assert len(pred_i.shape) == 1
+                assert len(orig_mask_i) > 1000
+                pred_i = torch.where(orig_mask_i.squeeze(-1) > 0, y_i, pred_i)
+            out_dir_path = Path(CONFIG.NBTEST.out_dir) / name[i]
+            out_dir_orig_path = Path(CONFIG.NBTEST.out_dir_orig) / name[i]
+            sf.write(out_dir_orig_path, y_i.squeeze(0).cpu().numpy(), samplerate=CONFIG.DATA.sr, subtype='PCM_16')
+            sf.write(out_dir_path, pred_i.cpu().numpy(), samplerate=CONFIG.DATA.sr, subtype='PCM_16')
 
-        tar_wav = tar_wav.cpu().numpy()
-        inp_wav = inp_wav.cpu().numpy()
-        pred = pred.detach().cpu().numpy()
-        lsd, _ = LSD(tar_wav, pred)
+        x = torch.view_as_complex(inp.permute(0, 2, 3, 1).contiguous())
+        x = torch.istft(x, self.window_size, self.hop_size, window=self.window)
+        stoi = self.stoi(pred, y)
+        # print(stoi, "STOI")
 
-        if batch_idx in [5, 7, 9]:
-            sample_path = os.path.join(CONFIG.LOG.sample_path)
-            path = os.path.join(sample_path, 'sample_' + str(batch_idx))
-            visualize(tar_wav, inp_wav, pred, path)
-            sf.write(os.path.join(path, 'enhanced_output.wav'), pred, samplerate=CONFIG.DATA.sr, subtype='PCM_16')
-            sf.write(os.path.join(path, 'lossy_input.wav'), inp_wav, samplerate=CONFIG.DATA.sr, subtype='PCM_16')
-            sf.write(os.path.join(path, 'target.wav'), tar_wav, samplerate=CONFIG.DATA.sr, subtype='PCM_16')
         if CONFIG.DATA.sr != 16000:
+            pred, y = pred.detach().cpu().numpy(), y.detach().cpu().numpy()
             pred = librosa.resample(pred, orig_sr=48000, target_sr=16000)
-            tar_wav = librosa.resample(tar_wav, orig_sr=48000, target_sr=16000, res_type='kaiser_fast')
-        ret = plcmos.run(pred, tar_wav)
-        # pesq = self.pesq(torch.tensor(pred), torch.tensor(tar_wav))
-        metrics = {
-            "Intrusive": ret[0],
-            "Non-intrusive": ret[1],
-            'LSD': lsd,
+            y = librosa.resample(y, orig_sr=48000, target_sr=16000, res_type='kaiser_fast')
+
+        intrusives = []
+        non_intrusives = []
+        lsds = []
+        for i in range(pred.shape[0]):
+            ret = plcmos.run(pred[i, :], y[i, :])
+            intrusives.append(ret[0])
+            non_intrusives.append(ret[1])
+            lsds.append(LSD(y[i, :], pred[i, :])[0])
+        log_dict = {
+            "Intrusive": float(np.mean(intrusives)),
+            "Non-intrusive": float(np.mean(non_intrusives)),
+            'LSD': float(np.mean(lsds)),
             'STOI': stoi,
-            # 'PESQ': pesq,
+            "val_stft_loss": loss.item()
         }
-        self.log_dict(metrics)
-        return metrics
+        print(log_dict)
+        self.log_dict(log_dict, on_step=False, on_epoch=True, sync_dist=True)
+        return log_dict
 
     def predict_step(self, batch, batch_idx: int, dataloader_idx: int = 0):
         inp, tar, inp_wav, tar_wav, mask = batch

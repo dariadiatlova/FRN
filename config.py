@@ -1,14 +1,14 @@
 class CONFIG:
-    gpus = "0"  # List of gpu devices
+    gpus = "0,1,2,3"  # List of gpu devices
 
     class TRAIN:
-        sainty_check = True  # if True will try to remember <sainty_size> samples, from SaintyCheckLoader
-        sainty_size = 1 # number of samples to remember
-        batch_size = 1  # number of audio files per batch
+        sainty_check = False  # if True will try to remember <sainty_size> samples, from SaintyCheckLoader
+        sainty_size = 4 # number of samples to remember
+        batch_size = 96  # number of audio files per batch
         lr = 1e-2  # learning rate
-        limit_val_batches = 1
-        epochs = 1000  # max training epochs
-        check_val_every_n_epoch = 10 # run validation each
+        limit_val_batches = 4
+        epochs = 300  # max training epochs
+        check_val_every_n_epoch = 5 # run validation each
         workers = 1  # number of dataloader workers
         val_split = 0.02  # validation set proportion
         clipping_val = 1.0  # gradient clipping value
@@ -25,7 +25,7 @@ class CONFIG:
 
     # Dataset config
     class DATA:
-        dataset = 'vctk'  # dataset to use
+        dataset = 'dns_fullband'  # dataset to use
         '''
         Dictionary that specifies paths to root directories and train/test text files of each datasets.
         'root' is the path to the dataset and each line of the train.txt/test.txt files should contains the path to an
@@ -34,6 +34,10 @@ class CONFIG:
         data_dir = {'vctk': {'root': 'data/vctk/wav48',
                              'train': "data/vctk/train.txt",
                              'test': "data/vctk/test.txt"},
+
+                    'dns_fullband': {'root': 'data/dns_fullband/',
+                                     'train': "data/large_fullband_train.txt",
+                                     'test': "data/large_fullband_train.txt"},
                     }
 
         assert dataset in data_dir.keys(), 'Unknown dataset.'
@@ -54,8 +58,8 @@ class CONFIG:
             trace_path = 'test_samples/blind/lossy_singals'  # must be clarified if masking = 'real'
 
     class LOG:
-        log_dir = 'cosine_sainty_lightning_logs'  # checkpoint and log directory
-        sample_path = 'cosine_sainty_audio_samples'  # path to save generated audio samples in evaluation.
+        log_dir = 'lightning_logs'  # checkpoint and log directory
+        sample_path = 'evaluation_149_audio_samples'  # path to save generated audio samples in evaluation.
 
     class TEST:
         in_dir = 'blind/lossy_signals'  # path to test audio inputs
@@ -64,7 +68,7 @@ class CONFIG:
         out_dir_orig = 'blind/lossy_signals48k'
 
     class NBTEST:
-        to_synthesize = 1 # first n samples from real_dir will be synthesized with the loss in loss_path
+        to_synthesize = 64 # first n samples from real_dir will be synthesized with the loss in loss_path
         packet_size = 960  # 20ms
         repeat_factor = 3 # will load real mask for orig sample rate, how much should repeat each sample (diff target sr / orig sr)
         transition_probs = [(0.9, 0.1)]  # (0.9, 0.1) ~ 10%; (0.8, 0.2) ~ 20%; (0.6, 0.4) ~ 40%
@@ -72,12 +76,15 @@ class CONFIG:
         assert masking in ['gen', 'real']
         loss_path = 'blind/lossy_signals'  # must be clarified if masking = 'real'
         real_dir = 'X_CleanReference'
-        out_dir = 'causal_training/gen'  # path to generated outputs
-        out_dir_orig = 'causal_training/loosy'
+        out_dir = 'test_inference/used_mask_generated'  # path to generated outputs
+        out_dir_orig = 'test_inference/ordinary_loosy'
+        use_mask = True # if True after synthesising will use non-masked wav amplitudes
 
     class WANDB:
         project = "FRN"
-        log_n_audios = 1
-        monitor = "train_stft_loss"
+        log_n_audios = 96
+        monitor = "val_stft_loss"
+        resume_wandb_run = False
+        wandb_run_id = None
 
 

@@ -19,6 +19,10 @@ parser = argparse.ArgumentParser()
 
 parser.add_argument('--dirpath', default=None,
                     help='directory to log values')
+parser.add_argument('--ckpt', default=None,
+                    help='path to .ckpt file to continue training with')
+parser.add_argument('--hprm', default=None,
+                    help='path to hparams.yaml file to initialize PLCModel')
 parser.add_argument('--lr', default=None, type=float,
                     help='if not specified will use value from config')
 parser.add_argument('--version', default=None,
@@ -50,20 +54,32 @@ def resume(train_dataset, val_dataset, version):
 
 
 def train():
+    torch.set_float32_matmul_precision("high")
     if CONFIG.TRAIN.sainty_check:
         train_dataset = SaintyCheckLoader(size=CONFIG.TRAIN.sainty_size)
         val_dataset = train_dataset
     else:
         train_dataset = TrainDataset('train')
         val_dataset = TrainDataset('val')
-    args.dirpath = args.dirpath if args.dirpath is not None else CONFIG.LOG.log_dir
-    checkpoint_callback = ModelCheckpoint(dirpath=args.dirpath,
+    # args.dirpath = args.dirpath if args.dirpath is not None else CONFIG.LOG.log_dir
+    checkpoint_callback = ModelCheckpoint(dirpath=CONFIG.LOG.log_dir, every_n_epochs=5,
                                           monitor=CONFIG.WANDB.monitor, mode='min', verbose=True,
-                                          filename='frn-{epoch:02d}-{val_loss:.4f}', save_weights_only=False)
+                                          filename='frn-{epoch:02d}-{val_loss:.4f}', save_weights_only=False,
+                                          save_last=True, save_on_train_epoch_end=True)
     gpus = CONFIG.gpus.split(',')
-    logger = WandbLogger(project=CONFIG.WANDB.project, log_model=False) # TO DO REFACTOR CONFIG
+    logger = WandbLogger(project=CONFIG.WANDB.project, log_model=False,
+                         resume=CONFIG.WANDB.resume_wandb_run, id=CONFIG.WANDB.wandb_run_id)
     if args.version is not None:
         model = resume(train_dataset, val_dataset, args.version)
+    elif args.ckpt is not None:
+        model = PLCModel.load_from_checkpoint(args.ckpt,
+                                              strict=True,
+                                              hparams_file=args.hprm,
+                                              train_dataset=train_dataset,
+                                              val_dataset=val_dataset,
+                                              window_size=CONFIG.DATA.window_size,
+                                              lr=args.lr)
+
     else:
         model = PLCModel(train_dataset,
                          val_dataset,
@@ -160,20 +176,22 @@ if __name__ == '__main__':
                 # pdb.set_trace()
                 test_loader = DataLoader(testset, batch_size=1, num_workers=4)
                 trainer = pl.Trainer(accelerator='gpu', devices=1, enable_checkpointing=False, logger=False)
-                data_lists = [i for i in testset.data_list]
-                result = trainer.predict(model, test_loader, return_predictions=True)
+                # data_lists = [i for i in testset.data_list]
+                # result = trainer.predict(model, test_loader, return_predictions=True)
                 # import pdb
                 # pdb.set_trace()
-                for j in range(len(testset)):
-                    pred = result[j][0]
-                    inp_wav = result[j][1]
-                    # save files
-                    out_path = os.path.join(CONFIG.NBTEST.out_dir, os.path.basename(testset.data_list[j]))
-                    print(out_path)
-                    sf.write(out_path, pred.squeeze(0).cpu().numpy(), samplerate=CONFIG.DATA.sr, subtype='PCM_16')
-                    out_orig_path = os.path.join(CONFIG.NBTEST.out_dir_orig, os.path.basename(testset.data_list[j]))
-                    sf.write(out_orig_path, inp_wav.squeeze(0).cpu().numpy(), samplerate=CONFIG.DATA.sr, subtype='PCM_16')
-                    print(out_orig_path)
+                # for j in range(len(testset)):
+                #     pred = result[j][0]
+                #     inp_wav = result[j][1]
+                #     # save files
+                #     out_path = os.path.join(CONFIG.NBTEST.out_dir, os.path.basename(testset.data_list[j]))
+                #     print(out_path)
+                #     sf.write(out_path, pred.squeeze(0).cpu().numpy(), samplerate=CONFIG.DATA.sr, subtype='PCM_16')
+                #     out_orig_path = os.path.join(CONFIG.NBTEST.out_dir_orig, os.path.basename(testset.data_list[j]))
+                #     sf.write(out_orig_path, inp_wav.squeeze(0).cpu().numpy(), samplerate=CONFIG.DATA.sr, subtype='PCM_16')
+                #     print(out_orig_path)
+                result = trainer.test(model, test_loader)
+                print(result)
         else:
             onnx_path = 'lightning_logs/version_{}/checkpoints/frn.onnx'.format(str(args.version))
             to_onnx(model, onnx_path)
