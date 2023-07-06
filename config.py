@@ -4,7 +4,7 @@ class CONFIG:
     class TRAIN:
         sainty_check = True  # if True will try to remember <sainty_size> samples, from SaintyCheckLoader
         sainty_size = 1 # number of samples to remember
-        batch_size = 1  # number of audio files per batch
+        batch_size = 96  # number of audio files per batch
         lr = 1e-2  # learning rate
         limit_val_batches = 1
         epochs = 1000  # max training epochs
@@ -25,7 +25,7 @@ class CONFIG:
 
     # Dataset config
     class DATA:
-        dataset = 'vctk'  # dataset to use
+        dataset = 'dns_fullband'  # dataset to use
         '''
         Dictionary that specifies paths to root directories and train/test text files of each datasets.
         'root' is the path to the dataset and each line of the train.txt/test.txt files should contains the path to an
@@ -34,6 +34,10 @@ class CONFIG:
         data_dir = {'vctk': {'root': 'data/vctk/wav48',
                              'train': "data/vctk/train.txt",
                              'test': "data/vctk/test.txt"},
+
+                    'dns_fullband': {'root': 'data/dns_fullband/',
+                                     'train': "data/large_fullband_train.txt",
+                                     'test': "data/large_fullband_test.txt"},
                     }
 
         assert dataset in data_dir.keys(), 'Unknown dataset.'

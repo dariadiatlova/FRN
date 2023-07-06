@@ -66,6 +66,7 @@ class PLCModel(pl.LightningModule):
         #            mask; shape (B, seq_len, p_dim)
         #     Output: real-imaginary
         #     """
+        assert x is None, f"{x.shape}"
         B, C, F, T = x.shape
         mask = mask.permute(3, 0, 1, 2).unsqueeze(-1)
         x = x.permute(3, 0, 1, 2).unsqueeze(-1)
@@ -77,6 +78,7 @@ class PLCModel(pl.LightningModule):
         for i in range(T):
             step = x[i].to(self.device)
             feat, mlp_state = self.encoder(step, mlp_state)
+            assert prev_mag is None, f"{prev_mag.shape}, {predictor_state.shape}"
             prev_mag, predictor_state = self.predictor(prev_mag, predictor_state)
             assert prev_mag is None, f"{feat.shape}, {prev_mag.shape}, {x.shape}, {predictor_state.shape}" \
                                      f"{self.predictor}"
@@ -113,6 +115,7 @@ class PLCModel(pl.LightningModule):
         return loss
 
     def validation_step(self, val_batch, batch_idx):
+        assert val_batch is None, f"{val_batch[0].shape}"
         inp, tar, mask = val_batch
         f_0 = inp[:, :, 0:1, :]
         x_in = inp[:, :, 1:, :]
