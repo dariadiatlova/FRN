@@ -1,0 +1,9 @@
+eta_min: 1e-8
+lr: 1e-2
+enc_in_dim: 384
+enc_dim: 768
+pred_dim: 512
+pred_layers: 1
+enc_layers: 4
+w_lin_mag: 0
+loss_ffts: [1024, 2048, 512] # hop sizes [480, 960, 128]

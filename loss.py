@@ -96,9 +96,8 @@ class STFTLossDDP(STFTLoss):
 
 class MRSTFTLossDDP(MultiResolutionSTFTLoss):
     def __init__(self,
-                 fft_sizes=(1024, 2048, 512),
-                 hop_sizes=(120, 240, 50),
-                 win_lengths=(600, 1200, 240),
+                 fft_sizes=(1024, 2048, 512), # (600, 1200, 240)
+                 hop_sizes=(480, 960, 128), #(120, 240, 50),
                  window="hann_window",
                  w_sc=1.0,
                  w_log_mag=1.0,
@@ -110,6 +109,7 @@ class MRSTFTLossDDP(MultiResolutionSTFTLoss):
                  scale_invariance=False,
                  **kwargs):
         super(MultiResolutionSTFTLoss, self).__init__()
+        win_lengths = fft_sizes
         assert len(fft_sizes) == len(hop_sizes) == len(win_lengths)  # must define all
         self.stft_losses = torch.nn.ModuleList()
         for fs, ss, wl in zip(fft_sizes, hop_sizes, win_lengths):
@@ -129,9 +129,14 @@ class MRSTFTLossDDP(MultiResolutionSTFTLoss):
 
 
 class Loss(pl.LightningModule):
-    def __init__(self):
+    def __init__(self, w_log_mag, w_lin_mag, fft_sizes, hop_sizes):
         super(Loss, self).__init__()
-        self.stft_loss = MRSTFTLossDDP(sample_rate=CONFIG.DATA.sr, device="cpu", w_log_mag=0.0, w_lin_mag=1.0)
+        self.stft_loss = MRSTFTLossDDP(sample_rate=CONFIG.DATA.sr,
+                                       device="cpu",
+                                       w_log_mag=w_log_mag,
+                                       w_lin_mag=w_lin_mag,
+                                       fft_sizes=fft_sizes,
+                                       hop_sizes=hop_sizes)
         self.window = torch.sqrt(torch.hann_window(CONFIG.DATA.window_size))
 
     def forward(self, x, y):

@@ -301,7 +301,6 @@ class TrainDataset(Dataset):
     def __init__(self, mode='train'):
         dataset_name = CONFIG.DATA.dataset
         self.target_root = CONFIG.DATA.data_dir[dataset_name]['root']
-
         txt_list = CONFIG.DATA.data_dir[dataset_name]['train']
         self.data_list = self.load_txt(txt_list)
 
@@ -345,31 +344,12 @@ class TrainDataset(Dataset):
         sig = sig[:curr_size // self.p_sizes[0] * self.p_sizes[0]]
         return sig
 
-    def _create_mask_for_causal_inference(self, mask, sig):
-        """
-        mask: np.ndarray shape (audio_len // p_size)
-        sig: torch.FloatTensor, stft res shape C, F, T
-        return: mask of shape C, F, T, where original mask is twice repeated and padded if needed along T dim
-        """
-        mask = torch.tensor(mask, dtype=torch.long).squeeze(-1)
-        C, F, T = sig.shape
-        mask_target_size = mask.shape[0] * 2
-        mask = mask.repeat(2, 1).T.reshape(-1)
-        if T - mask.shape[0] == 1:
-            mask = torch.cat([mask, torch.tensor([0])])
-        reshaped = torch.repeat_interleave(mask, F, dim=0).reshape(T, F)
-        reshaped = torch.stack([reshaped for _ in range(C)]).permute(0, 2, 1)
-        return reshaped.detach()
-
     def __getitem__(self, index):
         sig = self.fetch_audio(index)
         assert len(sig) == self.chunk_len, f"Supposed to be equal to chunk len: {self.chunk_len}, got: {len(sig)}"
         sliced_sig = slice_into_frames(sig, self.window, self.stride) # p_size, n_frames
-        # assert sig.shape[0] == sliced_sig.shape[0] * sliced_sig.shape[1], f"idk {sig.shape}, {sliced_sig.shape}"
         mask_initial_dim = self.chunk_len // self.window
         mask = self.mask_generator.gen_mask(mask_initial_dim, seed=index)
-        # assert len(mask) == sliced_sig.shape[1], f"wtf, mask gen shape: {mask.shape}, exp to be {sliced_sig.shape[1]}"
-        # assert len(sig) == sliced_sig.shape[1] * mask_repeat_dim, f"Expected: {len(sig)}, {sliced_sig.shape[1] * mask_repeat_dim}"
         mask = torch.repeat_interleave(torch.tensor(mask.copy(), dtype=torch.float32), self.window)
         masked_sig = sig * mask.cpu().numpy()
         masked_sliced_sig = slice_into_frames(masked_sig, self.window, self.stride) # p_size, n_frames

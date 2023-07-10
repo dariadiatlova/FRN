@@ -4,6 +4,8 @@ import os
 import pytorch_lightning as pl
 import soundfile as sf
 import torch
+import wandb
+import yaml
 from pytorch_lightning.callbacks import ModelCheckpoint
 from pytorch_lightning.utilities.model_summary import summarize
 from torch.utils.data import DataLoader
@@ -37,7 +39,7 @@ args = parser.parse_args()
 assert args.mode in ['train', 'eval', 'test', 'onnx', 'nbtest'], "--mode should be 'train', 'eval', 'test' or 'onnx'"
 
 
-def resume(train_dataset, val_dataset, version):
+def resume(train_dataset, val_dataset, version, config):
     print("Version", version)
     model_path = os.path.join(CONFIG.LOG.log_dir, 'version_{}/checkpoints/'.format(str(version)))
     config_path = os.path.join(CONFIG.LOG.log_dir, 'version_{}/'.format(str(version)) + 'hparams.yaml')
@@ -46,50 +48,37 @@ def resume(train_dataset, val_dataset, version):
     checkpoint = PLCModel.load_from_checkpoint(ckpt_path,
                                                strict=True,
                                                hparams_file=config_path,
-                                               train_dataset=train_dataset,
-                                               val_dataset=val_dataset,
-                                               window_size=CONFIG.DATA.window_size)
+                                               config=config)
 
     return checkpoint
 
 
 def train():
-    torch.set_float32_matmul_precision("high")
-    if CONFIG.TRAIN.sainty_check:
-        train_dataset = SaintyCheckLoader(size=CONFIG.TRAIN.sainty_size)
-        val_dataset = train_dataset
-    else:
-        train_dataset = TrainDataset('train')
-        val_dataset = TrainDataset('val')
-    # args.dirpath = args.dirpath if args.dirpath is not None else CONFIG.LOG.log_dir
-    checkpoint_callback = ModelCheckpoint(dirpath=CONFIG.LOG.log_dir, every_n_epochs=5,
+    train_dataset = TrainDataset('train')
+    val_dataset = TrainDataset('val')
+    checkpoint_callback = ModelCheckpoint(dirpath=CONFIG.LOG.log_dir, every_n_epochs=1,
                                           monitor=CONFIG.WANDB.monitor, mode='min', verbose=True,
                                           filename='frn-{epoch:02d}-{val_loss:.4f}', save_weights_only=False,
                                           save_last=True, save_on_train_epoch_end=True)
     gpus = CONFIG.gpus.split(',')
     logger = WandbLogger(project=CONFIG.WANDB.project, log_model=False,
                          resume=CONFIG.WANDB.resume_wandb_run, id=CONFIG.WANDB.wandb_run_id)
+    if CONFIG.WANDB.sweep:
+        wandb.init(project="first_frn_sweep")
+        config = wandb.config
+    else:
+        config = yaml.load(open("config.yaml", "r"), Loader=yaml.FullLoader)
+        wandb.config = config
+
     if args.version is not None:
-        model = resume(train_dataset, val_dataset, args.version)
+        model = resume(train_dataset, val_dataset, args.version, config)
     elif args.ckpt is not None:
         model = PLCModel.load_from_checkpoint(args.ckpt,
                                               strict=True,
                                               hparams_file=args.hprm,
-                                              train_dataset=train_dataset,
-                                              val_dataset=val_dataset,
-                                              window_size=CONFIG.DATA.window_size,
-                                              lr=args.lr)
-
+                                              config=config)
     else:
-        model = PLCModel(train_dataset,
-                         val_dataset,
-                         window_size=CONFIG.DATA.window_size,
-                         enc_layers=CONFIG.MODEL.enc_layers,
-                         enc_in_dim=CONFIG.MODEL.enc_in_dim,
-                         enc_dim=CONFIG.MODEL.enc_dim,
-                         pred_dim=CONFIG.MODEL.pred_dim,
-                         pred_layers=CONFIG.MODEL.pred_layers,
-                         lr=args.lr)
+        model = PLCModel(config=config)
     logger.watch(model, log_graph=False)
     trainer = pl.Trainer(logger=logger,
                          gradient_clip_val=CONFIG.TRAIN.clipping_val,
@@ -106,6 +95,7 @@ def train():
                               num_workers=CONFIG.TRAIN.workers, persistent_workers=True)
     val_loader = DataLoader(val_dataset, shuffle=False, batch_size=CONFIG.TRAIN.batch_size,
                             num_workers=CONFIG.TRAIN.workers, persistent_workers=True)
+    torch.set_float32_matmul_precision("high")
     trainer.fit(model, train_loader, val_loader)
 
 
@@ -126,10 +116,14 @@ def to_onnx(model, onnx_path):
 
 
 if __name__ == '__main__':
-    torch.set_float32_matmul_precision("high")
-
     if args.mode == 'train':
-        train()
+        torch.set_float32_matmul_precision("high")
+        if CONFIG.WANDB.sweep:
+            sweep_config = yaml.load(open("sweep_config.yaml", "r"), Loader=yaml.FullLoader)
+            sweep_id = wandb.sweep(sweep_config, project="first_frn_sweep")
+            wandb.agent(sweep_id=sweep_id, function=train)
+        else:
+            train()
     else:
         model = resume(None, None, args.version)
         print(model.hparams)

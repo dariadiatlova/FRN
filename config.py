@@ -2,12 +2,12 @@ class CONFIG:
     gpus = "0,1,2,3"  # List of gpu devices
 
     class TRAIN:
-        sainty_check = False  # if True will try to remember <sainty_size> samples, from SaintyCheckLoader
+        pred_ckpt_path = None
         sainty_size = 4 # number of samples to remember
         batch_size = 96  # number of audio files per batch
         lr = 1e-2  # learning rate
         limit_val_batches = 4
-        epochs = 100  # max training epochs
+        epochs = 300  # max training epochs
         check_val_every_n_epoch = 5 # run validation each
         workers = 1  # number of dataloader workers
         val_split = 0.02  # validation set proportion
@@ -15,13 +15,13 @@ class CONFIG:
         patience = 3  # learning rate scheduler's patience
         factor = 0.5  # learning rate reduction factor
 
-    # Model config
-    class MODEL:
-        enc_layers = 4  # number of MLP blocks in the encoder
-        enc_in_dim = 384  # dimension of the input projection layer in the encoder
-        enc_dim = 768  # dimension of the MLP blocks
-        pred_dim = 512  # dimension of the LSTM in the predictor
-        pred_layers = 1  # number of LSTM layers in the predictor
+    # # Model config
+    # class MODEL:
+    #     enc_layers = 4  # number of MLP blocks in the encoder
+    #     enc_in_dim = 384  # dimension of the input projection layer in the encoder
+    #     enc_dim = 768  # dimension of the MLP blocks
+    #     pred_dim = 512  # dimension of the LSTM in the predictor
+    #     pred_layers = 1  # number of LSTM layers in the predictor
 
     # Dataset config
     class DATA:
@@ -59,7 +59,7 @@ class CONFIG:
 
     class LOG:
         log_dir = 'masked_lightning_logs'  # checkpoint and log directory
-        sample_path = ''  # path to save generated audio samples in evaluation.
+        sample_path = 'masked_samples'  # path to save generated audio samples in evaluation.
 
     class TEST:
         in_dir = 'blind/lossy_signals'  # path to test audio inputs
@@ -84,7 +84,6 @@ class CONFIG:
         project = "FRN"
         log_n_audios = 96
         monitor = "val_stft_loss"
-        resume_wandb_run = False
-        wandb_run_id = None
-
-
+        resume_wandb_run = True
+        wandb_run_id = "fmkd7gzk"
+        sweep = False

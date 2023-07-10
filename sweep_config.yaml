@@ -1,0 +1,23 @@
+method: greed
+metric:
+  name: Intrusive
+  goal: maximize
+parameters:
+  eta_min:
+    values: [1e-3, 1e-5, 1e-8]
+  lr:
+    values: [1e-2]
+  enc_in_dim:
+    values: [64, 128, 256]
+  enc_dim:
+    values: [256, 512, 1024]
+  enc_layers:
+    values: [3, 4, 5]
+  pred_dim:
+    values: [512]
+  pred_layers:
+    values: [1, 2, 3]
+  w_lin_mag:
+    values: [0, 0.5, 1]
+  loss_ffts:
+    values: [[1920, 1440, 960], [1440, 960], [960]]

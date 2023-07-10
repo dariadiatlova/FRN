@@ -1,4 +1,3 @@
-import os
 from pathlib import Path
 
 import librosa
@@ -8,7 +7,6 @@ import soundfile as sf
 import torch
 import wandb
 from torch import nn
-# from torchmetrics.audio.pesq import PerceptualEvaluationSpeechQuality as PESQ
 from torchmetrics.audio.stoi import ShortTimeObjectiveIntelligibility as STOI
 
 from PLCMOS.plc_mos import PLCMOSEstimator
@@ -16,30 +14,33 @@ from config import CONFIG
 from loss import Loss
 from models.blocks import Encoder, Predictor
 from utils.utils import visualize, LSD
-from utils.tblogger import WandbSpectrogramLogging
+from utils.logger import WandbSpectrogramLogging
 
 plcmos = PLCMOSEstimator()
 
 
 class PLCModel(pl.LightningModule):
-    def __init__(self, train_dataset=None, val_dataset=None, window_size=960, enc_layers=4, enc_in_dim=384, enc_dim=768,
-                 pred_dim=512, pred_layers=1, pred_ckpt_path='lightning_logs/predictor/checkpoints/predictor.ckpt',
-                 lr=None):
+    def __init__(self, config):
         super(PLCModel, self).__init__()
-        self.window_size = window_size
-        self.hop_size = window_size // 2
-        self.learning_rate = lr if lr is not None else CONFIG.TRAIN.lr
+        self.config = config
+        pred_ckpt_path = CONFIG.TRAIN.pred_ckpt_path
+        self.window_size = CONFIG.DATA.window_size
+        self.hop_size = CONFIG.DATA.stride
         self.hparams.batch_size = CONFIG.TRAIN.batch_size
 
-        self.enc_layers = enc_layers
-        self.enc_in_dim = enc_in_dim
-        self.enc_dim = enc_dim
-        self.pred_dim = pred_dim
-        self.pred_layers = pred_layers
-        self.train_dataset = train_dataset
-        self.val_dataset = val_dataset
-        self.stoi = STOI(48000)
-        # self.pesq = PESQ(16000, 'wb')
+        self.learning_rate = float(config["lr"])
+        self.enc_layers = int(config["enc_layers"])
+        self.enc_in_dim = int(config["enc_in_dim"])
+        self.enc_dim = int(config["enc_dim"])
+        self.pred_dim = int(config["pred_dim"])
+        self.pred_layers = int(config["pred_layers"])
+        self.eta_min = float(config["eta_min"])
+        self.w_lin_mag = float(config["w_lin_mag"])
+        self.w_log_mag = 1 - self.w_lin_mag
+        self.fft_sizes = [int(i) for i in config["loss_ffts"]]
+        self.hop_sizes = [480, 960, 128] #[i // 4 for i in self.fft_sizes]
+
+        self.stoi = STOI(CONFIG.DATA.sr)
         self.log_spec = WandbSpectrogramLogging()
 
         if pred_ckpt_path is not None:
@@ -57,9 +58,10 @@ class PLCModel(pl.LightningModule):
         self.encoder = Encoder(in_dim=self.window_size, dim=self.enc_in_dim, depth=self.enc_layers,
                                mlp_dim=self.enc_dim)
 
-        self.loss = Loss()
+        self.loss = Loss(w_log_mag=self.w_log_mag, w_lin_mag=self.w_lin_mag,
+                         fft_sizes=self.fft_sizes, hop_sizes=self.hop_sizes)
         self.window = torch.sqrt(torch.hann_window(self.window_size))
-        self.save_hyperparameters('window_size', 'enc_layers', 'enc_in_dim', 'enc_dim', 'pred_dim', 'pred_layers')
+        # self.save_hyperparameters('window_size', 'enc_layers', 'enc_in_dim', 'enc_dim', 'pred_dim', 'pred_layers')
 
     def forward(self, x, mask):
         #     """
@@ -69,7 +71,7 @@ class PLCModel(pl.LightningModule):
         #     """
         B, C, F, T = x.shape
         x = x.permute(3, 0, 1, 2).unsqueeze(-1) #T B C F
-        expanded_mask = mask.permute(1, 0).unsqueeze(2).repeat(1, 1, C).unsqueeze(3).repeat(1, 1, 1, F)
+        expanded_mask = mask.permute(1, 0).unsqueeze(2).repeat(1, 1, C).unsqueeze(3).repeat(1, 1, 1, F).unsqueeze(-1)
         prev_mag = torch.zeros((B, 1, F, 1), device=x.device)
         predictor_state = torch.zeros((2, self.predictor.lstm_layers, B, self.predictor.lstm_dim),
                                       device=x.device)
@@ -78,16 +80,12 @@ class PLCModel(pl.LightningModule):
         for i in range(T):
             step = x[i].to(self.device)
             feat, mlp_state = self.encoder(step, mlp_state)
-            assert prev_mag is None, f"{prev_mag.shape}, {predictor_state.shape}"
             prev_mag, predictor_state = self.predictor(prev_mag, predictor_state)
-            assert feat.shape[0] == prev_mag.shape[0], f"{feat.shape}, {prev_mag.shape}, {x.shape}, {predictor_state.shape}, {self.predictor}"
-            assert feat.shape[2] == prev_mag.shape[2], f"{feat.shape}, {prev_mag.shape}, {x.shape}, {predictor_state.shape}, {self.predictor}"
-            assert feat.shape[3] == prev_mag.shape[3], f"{feat.shape}, {prev_mag.shape}, {x.shape}, {predictor_state.shape}, {self.predictor}"
             feat = torch.cat((feat, prev_mag), dim=1)
             feat = self.joiner(feat)
             feat = feat + step
             # if packet is not lost use gt
-            feat = torch.where(mask[i] > 0, x[i], feat)
+            feat = torch.where(expanded_mask[i] > 0, x[i], feat)
             result.append(feat)
             prev_mag = torch.linalg.norm(feat, dim=1, ord=1, keepdims=True)  # compute magnitude
         output = torch.cat(result, -1)
@@ -105,9 +103,11 @@ class PLCModel(pl.LightningModule):
 
     def training_step(self, batch, batch_idx):
         inp, tar, mask = batch
+        inp = inp.to(self.device)
+        tar = tar.to(self.device)
+        mask = mask.to(self.device)
         f_0 = inp[:, :, 0:1, :]
         x = inp[:, :, 1:, :]
-        # mask = mask[:, :, 1:, :]
         x = self(x, mask)
         x = torch.cat([f_0, x], dim=2)
         loss = self.loss(x, tar)
@@ -117,13 +117,13 @@ class PLCModel(pl.LightningModule):
 
     def validation_step(self, val_batch, batch_idx):
         inp, tar, mask = val_batch
+        inp = inp.to(self.device)
+        tar = tar.to(self.device)
+        mask = mask.to(self.device)
         f_0 = inp[:, :, 0:1, :]
         x_in = inp[:, :, 1:, :]
-        # mask = mask[:, :, 1:, :]
-
         pred = self(x_in, mask)
         pred = torch.cat([f_0, pred], dim=2)
-
         loss = self.loss(pred, tar)
         self.window = self.window.to(pred.device)
         pred = torch.view_as_complex(pred.permute(0, 2, 3, 1).contiguous())
@@ -164,7 +164,6 @@ class PLCModel(pl.LightningModule):
             pred = librosa.resample(pred, orig_sr=48000, target_sr=16000)
             y = librosa.resample(y, orig_sr=48000, target_sr=16000, res_type='kaiser_fast')
         # LOG METRICS
-        # pesq = self.pesq(torch.tensor(pred), torch.tensor(y))
         intrusives = []
         non_intrusives = []
         lsds = []
@@ -178,23 +177,21 @@ class PLCModel(pl.LightningModule):
             "Non-intrusive": float(np.mean(non_intrusives)),
             'LSD': float(np.mean(lsds)),
             'STOI': stoi,
-            # 'PESQ': pesq,
             "val_stft_loss": loss.item()
         }
         self.log_dict(log_dict, on_step=False, on_epoch=True, sync_dist=True)
 
     def test_step(self, test_batch, batch_idx):
         inp, tar, mask, name, orig_mask = test_batch
-        # print("Name:", name)
+        inp = inp.to(self.device)
+        tar = tar.to(self.device)
+        mask = mask.to(self.device)
         f_0 = inp[:, :, 0:1, :]
         x_in = inp[:, :, 1:, :]
-        mask = mask[:, :, 1:, :]
         pred = self(x_in, mask)
-        # print(pred.shape)
         pred = torch.cat([f_0, pred], dim=2)
         loss = self.loss(pred, tar)
         self.window = self.window.to(pred.device)
-        # print(out_dir_path)
         pred = torch.view_as_complex(pred.permute(0, 2, 3, 1).contiguous())
         pred = torch.istft(pred, self.window_size, self.hop_size, window=self.window)
         y = torch.view_as_complex(tar.permute(0, 2, 3, 1).contiguous())
@@ -202,13 +199,10 @@ class PLCModel(pl.LightningModule):
         for i in range(inp.shape[0]):
             y_i = y[i, :]
             pred_i = pred[i, :]
-            orig_mask_i = orig_mask[i, :].squeeze(-1)
+            # orig_mask_i = orig_mask[i, :].squeeze(-1)
             if CONFIG.NBTEST.use_mask:
-                assert len(orig_mask_i.shape) == 1
-                assert len(y_i.shape) == 1
-                assert len(pred_i.shape) == 1
-                assert len(orig_mask_i) > 1000
-                pred_i = torch.where(orig_mask_i.squeeze(-1) > 0, y_i, pred_i)
+                pass
+                # pred_i = torch.where(orig_mask_i.squeeze(-1) > 0, y_i, pred_i)
             out_dir_path = Path(CONFIG.NBTEST.out_dir) / name[i]
             out_dir_orig_path = Path(CONFIG.NBTEST.out_dir_orig) / name[i]
             sf.write(out_dir_orig_path, y_i.squeeze(0).cpu().numpy(), samplerate=CONFIG.DATA.sr, subtype='PCM_16')
@@ -217,7 +211,6 @@ class PLCModel(pl.LightningModule):
         x = torch.view_as_complex(inp.permute(0, 2, 3, 1).contiguous())
         x = torch.istft(x, self.window_size, self.hop_size, window=self.window)
         stoi = self.stoi(pred, y)
-        # print(stoi, "STOI")
 
         if CONFIG.DATA.sr != 16000:
             pred, y = pred.detach().cpu().numpy(), y.detach().cpu().numpy()
