@@ -1,4 +1,4 @@
-method: greed
+method: grid
 metric:
   name: Intrusive
   goal: maximize

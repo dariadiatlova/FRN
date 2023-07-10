@@ -1,14 +1,14 @@
 class CONFIG:
-    gpus = "0,1,2,3"  # List of gpu devices
+    gpus = "0"  # List of gpu devices
 
     class TRAIN:
-        pred_ckpt_path = None
-        sainty_size = 4 # number of samples to remember
-        batch_size = 96  # number of audio files per batch
+        pred_ckpt_path = "lightning_logs/predictor/checkpoints/predictor.ckpt"
+        sainty_size = 1 # number of samples to remember
+        batch_size = 256  # number of audio files per batch
         lr = 1e-2  # learning rate
-        limit_val_batches = 4
-        epochs = 300  # max training epochs
-        check_val_every_n_epoch = 5 # run validation each
+        limit_val_batches = 1
+        epochs = 100  # max training epochs
+        check_val_every_n_epoch = 1 # run validation each
         workers = 1  # number of dataloader workers
         val_split = 0.02  # validation set proportion
         clipping_val = 1.0  # gradient clipping value
@@ -25,7 +25,7 @@ class CONFIG:
 
     # Dataset config
     class DATA:
-        dataset = 'dns_fullband'  # dataset to use
+        dataset = 'subset_dns_fullband'  # dataset to use
         '''
         Dictionary that specifies paths to root directories and train/test text files of each datasets.
         'root' is the path to the dataset and each line of the train.txt/test.txt files should contains the path to an
@@ -38,6 +38,10 @@ class CONFIG:
                     'dns_fullband': {'root': 'data/dns_fullband/',
                                      'train': "data/large_fullband_train.txt",
                                      'test': "data/large_fullband_test.txt"},
+
+                    'subset_dns_fullband': {'root': 'data/dns_fullband/',
+                                            'train': "data/subset_large_fullband_train.txt", # 33242
+                                            'test': "data/subset_large_fullband_test.txt"}, # 649
                     }
 
         assert dataset in data_dir.keys(), 'Unknown dataset.'
@@ -58,8 +62,8 @@ class CONFIG:
             trace_path = 'test_samples/blind/lossy_singals'  # must be clarified if masking = 'real'
 
     class LOG:
-        log_dir = 'masked_lightning_logs'  # checkpoint and log directory
-        sample_path = 'masked_samples'  # path to save generated audio samples in evaluation.
+        log_dir = 'sweep_lightning_logs'  # checkpoint and log directory
+        sample_path = 'sweep_samples'  # path to save generated audio samples in evaluation.
 
     class TEST:
         in_dir = 'blind/lossy_signals'  # path to test audio inputs
@@ -84,6 +88,6 @@ class CONFIG:
         project = "FRN"
         log_n_audios = 96
         monitor = "val_stft_loss"
-        resume_wandb_run = True
-        wandb_run_id = "fmkd7gzk"
-        sweep = False
+        resume_wandb_run = False
+        wandb_run_id = None
+        sweep = True
