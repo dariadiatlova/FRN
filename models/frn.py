@@ -182,59 +182,73 @@ class PLCModel(pl.LightningModule):
         self.log_dict(log_dict, on_step=False, on_epoch=True, sync_dist=True)
 
     def test_step(self, test_batch, batch_idx):
-        inp, tar, mask, name, orig_mask = test_batch
-        inp = inp.to(self.device)
-        tar = tar.to(self.device)
-        mask = mask.to(self.device)
-        f_0 = inp[:, :, 0:1, :]
-        x_in = inp[:, :, 1:, :]
-        pred = self(x_in, mask)
-        pred = torch.cat([f_0, pred], dim=2)
-        loss = self.loss(pred, tar)
-        self.window = self.window.to(pred.device)
-        pred = torch.view_as_complex(pred.permute(0, 2, 3, 1).contiguous())
-        pred = torch.istft(pred, self.window_size, self.hop_size, window=self.window)
-        y = torch.view_as_complex(tar.permute(0, 2, 3, 1).contiguous())
-        y = torch.istft(y, self.window_size, self.hop_size, window=self.window)
-        for i in range(inp.shape[0]):
-            y_i = y[i, :]
-            pred_i = pred[i, :]
-            # orig_mask_i = orig_mask[i, :].squeeze(-1)
-            if CONFIG.NBTEST.use_mask:
-                pass
-                # pred_i = torch.where(orig_mask_i.squeeze(-1) > 0, y_i, pred_i)
-            out_dir_path = Path(CONFIG.NBTEST.out_dir) / name[i]
-            out_dir_orig_path = Path(CONFIG.NBTEST.out_dir_orig) / name[i]
-            sf.write(out_dir_orig_path, y_i.squeeze(0).cpu().numpy(), samplerate=CONFIG.DATA.sr, subtype='PCM_16')
-            sf.write(out_dir_path, pred_i.cpu().numpy(), samplerate=CONFIG.DATA.sr, subtype='PCM_16')
+        with torch.no_grad():
+            inp, tar, mask, name = test_batch
+            inp = inp.to(self.device)
+            tar = tar.to(self.device)
+            mask = mask.to(self.device)
+            f_0 = inp[:, :, :1, :]
+            x = inp[:, :, 1:, :]
+            pred = self(x, mask)
+            pred = torch.cat([f_0, pred], dim=2)
+            loss = self.loss(pred, tar)
+            self.window = self.window.to(pred.device)
+            pred = torch.view_as_complex(pred.permute(0, 2, 3, 1).contiguous())
+            pred = torch.istft(pred, self.window_size, self.hop_size, window=self.window)
+            y = torch.view_as_complex(tar.permute(0, 2, 3, 1).contiguous())
+            y = torch.istft(y, self.window_size, self.hop_size, window=self.window)
+            loosy_signal = torch.view_as_complex(inp.permute(0, 2, 3, 1).contiguous())
+            loosy_signal = torch.istft(loosy_signal, self.window_size, self.hop_size, window=self.window)
+            for i in range(inp.shape[0]):
+                y_i = y[i]
+                pred_i = pred[i]
+                out_dir_path = Path(CONFIG.NBTEST.out_dir) / name[i]
+                out_dir_orig_path = Path(CONFIG.NBTEST.out_dir_orig) / name[i]
+                sf.write(out_dir_orig_path, loosy_signal[i].squeeze(0).cpu().numpy(), samplerate=CONFIG.DATA.sr, subtype='PCM_16')
+                sf.write(out_dir_path, pred_i.squeeze(0).cpu().numpy(), samplerate=CONFIG.DATA.sr, subtype='PCM_16')
 
-        x = torch.view_as_complex(inp.permute(0, 2, 3, 1).contiguous())
-        x = torch.istft(x, self.window_size, self.hop_size, window=self.window)
-        stoi = self.stoi(pred, y)
+            stoi = self.stoi(pred, y)
+            stoi_predicted = self.stoi(loosy_signal, y)
 
-        if CONFIG.DATA.sr != 16000:
-            pred, y = pred.detach().cpu().numpy(), y.detach().cpu().numpy()
-            pred = librosa.resample(pred, orig_sr=48000, target_sr=16000)
-            y = librosa.resample(y, orig_sr=48000, target_sr=16000, res_type='kaiser_fast')
+            if CONFIG.DATA.sr != 16000:
+                pred, y = pred.detach().cpu().numpy(), y.detach().cpu().numpy()
+                loosy_signal = loosy_signal.detach().cpu().numpy()
+                pred = librosa.resample(pred, orig_sr=48000, target_sr=16000)
+                y = librosa.resample(y, orig_sr=48000, target_sr=16000, res_type='kaiser_fast')
+                loosy_signal = librosa.resample(loosy_signal, orig_sr=48000, target_sr=16000, res_type='kaiser_fast')
 
-        intrusives = []
-        non_intrusives = []
-        lsds = []
-        for i in range(pred.shape[0]):
-            ret = plcmos.run(pred[i, :], y[i, :])
-            intrusives.append(ret[0])
-            non_intrusives.append(ret[1])
-            lsds.append(LSD(y[i, :], pred[i, :])[0])
-        log_dict = {
-            "Intrusive": float(np.mean(intrusives)),
-            "Non-intrusive": float(np.mean(non_intrusives)),
-            'LSD': float(np.mean(lsds)),
-            'STOI': stoi,
-            "val_stft_loss": loss.item()
-        }
-        print(log_dict)
-        self.log_dict(log_dict, on_step=False, on_epoch=True, sync_dist=True)
-        return log_dict
+            intrusives = []
+            non_intrusives = []
+            lsds = []
+            for i in range(pred.shape[0]):
+                ret = plcmos.run(pred[i, :], y[i, :])
+                intrusives.append(ret[0])
+                non_intrusives.append(ret[1])
+                lsds.append(LSD(y[i, :], pred[i, :])[0])
+
+            loosy_intrusives = []
+            loosy_non_intrusives = []
+            loosy_lsds = []
+            for i in range(loosy_signal.shape[0]):
+                ret = plcmos.run(loosy_signal[i, :], y[i, :])
+                loosy_intrusives.append(ret[0])
+                loosy_non_intrusives.append(ret[1])
+                loosy_lsds.append(LSD(y[i, :], loosy_signal[i, :])[0])
+
+            log_dict = {
+                "Intrusive": float(np.mean(intrusives)),
+                "Non-intrusive": float(np.mean(non_intrusives)),
+                'LSD': float(np.mean(lsds)),
+                'STOI': stoi,
+                "val_stft_loss": loss.item(),
+                "Loosy Intrusive": float(np.mean(loosy_intrusives)),
+                "Loosy Non-intrusive": float(np.mean(loosy_non_intrusives)),
+                'Loosy LSD': float(np.mean(loosy_lsds)),
+                'Loosy STOI': stoi_predicted,
+            }
+            print(log_dict)
+            self.log_dict(log_dict, on_step=False, on_epoch=True, sync_dist=True)
+            return log_dict
 
     def predict_step(self, batch, batch_idx: int, dataloader_idx: int = 0):
         inp, tar, inp_wav, tar_wav, mask = batch

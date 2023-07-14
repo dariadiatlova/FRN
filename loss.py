@@ -97,7 +97,9 @@ class STFTLossDDP(STFTLoss):
 class MRSTFTLossDDP(MultiResolutionSTFTLoss):
     def __init__(self,
                  fft_sizes=(1024, 2048, 512), # (600, 1200, 240)
-                 hop_sizes=(480, 960, 128), #(120, 240, 50),
+                 #hop_sizes=(480, 960, 128), #(120, 240, 50),
+                 hop_sizes=(120, 240, 50),
+                 win_lengths=(600, 1200, 240),
                  window="hann_window",
                  w_sc=1.0,
                  w_log_mag=1.0,
@@ -109,7 +111,7 @@ class MRSTFTLossDDP(MultiResolutionSTFTLoss):
                  scale_invariance=False,
                  **kwargs):
         super(MultiResolutionSTFTLoss, self).__init__()
-        win_lengths = fft_sizes
+        # win_lengths = fft_sizes
         assert len(fft_sizes) == len(hop_sizes) == len(win_lengths)  # must define all
         self.stft_losses = torch.nn.ModuleList()
         for fs, ss, wl in zip(fft_sizes, hop_sizes, win_lengths):

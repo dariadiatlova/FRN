@@ -5,5 +5,5 @@ enc_dim: 768
 pred_dim: 512
 pred_layers: 1
 enc_layers: 4
-w_lin_mag: 0
+w_lin_mag: 1
 loss_ffts: [1024, 2048, 512] # hop sizes [480, 960, 128]

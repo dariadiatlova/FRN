@@ -8,7 +8,6 @@ import wandb
 import yaml
 from pytorch_lightning.callbacks import ModelCheckpoint
 from pytorch_lightning.utilities.model_summary import summarize
-from torch.utils.data import DataLoader
 
 from config import CONFIG
 from dataset import TrainDataset, TestLoader, BlindTestLoader, NonBlindTestLoader, SaintyCheckLoader
@@ -42,15 +41,15 @@ assert args.mode in ['train', 'eval', 'test', 'onnx', 'nbtest'], "--mode should 
 def resume(train_dataset, val_dataset, version, config):
     print("Version", version)
     model_path = os.path.join(CONFIG.LOG.log_dir, 'version_{}/checkpoints/'.format(str(version)))
-    config_path = os.path.join(CONFIG.LOG.log_dir, 'version_{}/'.format(str(version)) + 'hparams.yaml')
+    # config_path = os.path.join(CONFIG.LOG.log_dir, 'version_{}/'.format(str(version)) + 'hparams.yaml')
     model_name = [x for x in os.listdir(model_path) if x.endswith(".ckpt")][0]
     ckpt_path = model_path + model_name
     checkpoint = PLCModel.load_from_checkpoint(ckpt_path,
                                                strict=True,
-                                               hparams_file=config_path,
+                                               # hparams_file=config_path,
                                                config=config)
 
-    return checkpoint
+    return checkpoint, ckpt_path
 
 
 def train():
@@ -71,13 +70,15 @@ def train():
         wandb.config = config
 
     if args.version is not None:
-        model = resume(train_dataset, val_dataset, args.version, config)
+        model, ckpt_path = resume(train_dataset, val_dataset, args.version, config)
     elif args.ckpt is not None:
+        ckpt_path = args.ckpt
         model = PLCModel.load_from_checkpoint(args.ckpt,
                                               strict=True,
-                                              hparams_file=args.hprm,
+                                              # hparams_file=args.hprm,
                                               config=config)
     else:
+        ckpt_path = None
         model = PLCModel(config=config)
     logger.watch(model, log_graph=False)
     trainer = pl.Trainer(logger=logger,
@@ -96,7 +97,10 @@ def train():
     val_loader = DataLoader(val_dataset, shuffle=False, batch_size=CONFIG.TRAIN.batch_size,
                             num_workers=CONFIG.TRAIN.workers, persistent_workers=True)
     torch.set_float32_matmul_precision("high")
-    trainer.fit(model, train_loader, val_loader)
+    if ckpt_path is None:
+        trainer.fit(model, train_loader, val_loader)
+    else:
+        trainer.fit(model, train_loader, val_loader, ckpt_path=ckpt_path)
 
 
 def to_onnx(model, onnx_path):
@@ -121,14 +125,16 @@ if __name__ == '__main__':
         if CONFIG.WANDB.sweep:
             sweep_config = yaml.load(open("sweep_config.yaml", "r"), Loader=yaml.FullLoader)
             sweep_id = wandb.sweep(sweep_config, project="first_frn_sweep")
-            wandb.agent(sweep_id=sweep_id, function=train)
+            if CONFIG.WANDB.sweep_id is None:
+                wandb.agent(sweep_id=sweep_id, function=train)
+            else:
+                wandb.agent(sweep_id=CONFIG.WANDB.sweep_id, function=train)
         else:
             train()
     else:
-        model = resume(None, None, args.version)
-        print(model.hparams)
-        print(summarize(model))
-
+        config = yaml.load(open("config.yaml", "r"), Loader=yaml.FullLoader)
+        ckpt_path = CONFIG.NBTEST.ckpt_path
+        model = PLCModel.load_from_checkpoint(ckpt_path, strict=True, config=config)
         model.eval()
         model.freeze()
         if args.mode == 'eval':
@@ -163,28 +169,12 @@ if __name__ == '__main__':
             with torch.no_grad():
                 mkdir_p(CONFIG.NBTEST.out_dir)
                 mkdir_p(CONFIG.NBTEST.out_dir_orig)
-                model.cuda(device=0)
+                model.cuda()
                 model.eval()
                 testset = NonBlindTestLoader(size=CONFIG.NBTEST.to_synthesize)
-                # import pdb
-                # pdb.set_trace()
-                test_loader = DataLoader(testset, batch_size=1, num_workers=4)
-                trainer = pl.Trainer(accelerator='gpu', devices=1, enable_checkpointing=False, logger=False)
-                # data_lists = [i for i in testset.data_list]
-                # result = trainer.predict(model, test_loader, return_predictions=True)
-                # import pdb
-                # pdb.set_trace()
-                # for j in range(len(testset)):
-                #     pred = result[j][0]
-                #     inp_wav = result[j][1]
-                #     # save files
-                #     out_path = os.path.join(CONFIG.NBTEST.out_dir, os.path.basename(testset.data_list[j]))
-                #     print(out_path)
-                #     sf.write(out_path, pred.squeeze(0).cpu().numpy(), samplerate=CONFIG.DATA.sr, subtype='PCM_16')
-                #     out_orig_path = os.path.join(CONFIG.NBTEST.out_dir_orig, os.path.basename(testset.data_list[j]))
-                #     sf.write(out_orig_path, inp_wav.squeeze(0).cpu().numpy(), samplerate=CONFIG.DATA.sr, subtype='PCM_16')
-                #     print(out_orig_path)
-                result = trainer.test(model, test_loader)
+                test_loader = DataLoader(testset, batch_size=1, num_workers=1)
+                trainer = pl.Trainer(accelerator='gpu', devices=1)
+                result = trainer.test(model, test_loader, ckpt_path=ckpt_path)
                 print(result)
         else:
             onnx_path = 'lightning_logs/version_{}/checkpoints/frn.onnx'.format(str(args.version))
