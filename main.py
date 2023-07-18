@@ -7,13 +7,12 @@ import torch
 import wandb
 import yaml
 from pytorch_lightning.callbacks import ModelCheckpoint
-from pytorch_lightning.utilities.model_summary import summarize
+from pytorch_lightning.loggers import WandbLogger
+from torch.utils.data import DataLoader
 
 from config import CONFIG
-from dataset import TrainDataset, TestLoader, BlindTestLoader, NonBlindTestLoader, SaintyCheckLoader
-from torch.utils.data import DataLoader
+from dataset import TrainDataset, TestLoader, BlindTestLoader, NonBlindTestLoader
 from models.frn import PLCModel, OnnxWrapper
-from pytorch_lightning.loggers import WandbLogger
 from utils.utils import mkdir_p
 
 parser = argparse.ArgumentParser()
@@ -59,7 +58,8 @@ def train():
                                           monitor=CONFIG.WANDB.monitor, mode='min', verbose=True,
                                           filename='frn-{epoch:02d}-{val_loss:.4f}', save_weights_only=False,
                                           save_last=True, save_on_train_epoch_end=True)
-    gpus = CONFIG.gpus.split(',')
+    gpus = [int(i) for i in CONFIG.gpus.split(',')]
+
     logger = WandbLogger(project=CONFIG.WANDB.project, log_model=False,
                          resume=CONFIG.WANDB.resume_wandb_run, id=CONFIG.WANDB.wandb_run_id)
     if CONFIG.WANDB.sweep:
@@ -82,13 +82,15 @@ def train():
         model = PLCModel(config=config)
     logger.watch(model, log_graph=False)
     trainer = pl.Trainer(logger=logger,
+                         log_every_n_steps=2,
                          gradient_clip_val=CONFIG.TRAIN.clipping_val,
-                         gpus=len(gpus),
+                         devices=gpus,
                          max_epochs=CONFIG.TRAIN.epochs,
-                         accelerator="gpu" if len(gpus) > 1 else None,
+                         accelerator="gpu" if len(gpus) >= 1 else None,
                          callbacks=[checkpoint_callback],
                          limit_val_batches=CONFIG.TRAIN.limit_val_batches,
-                         check_val_every_n_epoch=CONFIG.TRAIN.check_val_every_n_epoch)
+                         check_val_every_n_epoch=CONFIG.TRAIN.check_val_every_n_epoch,
+                         num_sanity_val_steps=CONFIG.TRAIN.limit_sainty_steps)
     print(model.hparams)
     print(
         'Dataset: {}, Train files: {}, Val files {}'.format(CONFIG.DATA.dataset, len(train_dataset), len(val_dataset)))

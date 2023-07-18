@@ -1,19 +1,26 @@
 class CONFIG:
-    gpus = "0,1,2,3"  # List of gpu devices
+    gpus = "5"  # List of gpu devices
 
     class TRAIN:
-        pred_ckpt_path = None #"lightning_logs/predictor/checkpoints/predictor.ckpt"
-        sainty_size = 4 #1 # number of samples to remember
+        pred_ckpt_path = "lightning_logs/predictor/checkpoints/predictor.ckpt"
+        limit_sainty_steps = 1
         batch_size = 256  # number of audio files per batch
         lr = 1e-2  # learning rate
-        limit_val_batches = 4 #1
+        limit_val_batches = 1 #1
         epochs = 300 #100  # max training epochs
-        check_val_every_n_epoch = 5 #1 # run validation each
+        check_val_every_n_epoch = 10 #1 # run validation each
         workers = 1  # number of dataloader workers
         val_split = 0.02  # validation set proportion
         clipping_val = 1.0  # gradient clipping value
         patience = 3  # learning rate scheduler's patience
         factor = 0.5  # learning rate reduction factor
+
+    class DISCRIMINATOR:
+        fm_alpha = 10
+        adv_gen = 1e-2
+        adv_disc = 1e-2
+        lr = 1e-4
+
 
     # # Model config
     # class MODEL:
@@ -62,8 +69,8 @@ class CONFIG:
             trace_path = 'test_samples/blind/lossy_singals'  # must be clarified if masking = 'real'
 
     class LOG:
-        log_dir = 'try2_masked_lightning_logs' #'sweep_lightning_logs'  # checkpoint and log directory
-        sample_path = 'try2_masked_lightning_samples' #'sweep_samples'  # path to save generated audio samples in evaluation.
+        log_dir = 'adv_masked_lightning_logs' #'sweep_lightning_logs'  # checkpoint and log directory
+        sample_path = 'adv_masked_lightning_samples' #'sweep_samples'  # path to save generated audio samples in evaluation.
 
     class TEST:
         in_dir = 'blind/lossy_signals'  # path to test audio inputs
@@ -72,7 +79,7 @@ class CONFIG:
         out_dir_orig = 'blind/lossy_signals48k'
 
     class NBTEST:
-        ckpt_path = 'try2_masked_lightning_logs/frn-epoch=89-val_loss=0.0000.ckpt'
+        ckpt_path = 'adv_masked_lightning_logs/last.ckpt'
         to_synthesize = None # first n samples from real_dir will be synthesized with the loss in loss_path
         packet_size = 960  # 20ms
         transition_probs = [(0.9, 0.1)]  # (0.9, 0.1) ~ 10%; (0.8, 0.2) ~ 20%; (0.6, 0.4) ~ 40%
@@ -80,14 +87,14 @@ class CONFIG:
         assert masking in ['gen', 'real']
         loss_path = 'blind/lossy_signals'  # must be clarified if masking = 'real'
         real_dir = 'X_CleanReference'
-        out_dir = 'test_inference/epoch89_awesome_mask_gen'  # path to generated outputs
-        out_dir_orig = 'test_inference/epoch59_awesome_mask_loosy'
+        out_dir = 'test_inference/dummy_adversarial_gen'  # path to generated outputs
+        out_dir_orig = 'test_inference/epoch99_adversarial_loosy'
 
     class WANDB:
         project = "FRN"
         sweep_id = None #"yfy8iu1g"
         log_n_audios = 96
-        monitor = "val_stft_loss"
+        monitor = "Intrusive"
         resume_wandb_run = False
         wandb_run_id = None
         sweep = False #True

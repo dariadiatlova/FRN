@@ -1,3 +1,4 @@
+import itertools
 from pathlib import Path
 
 import librosa
@@ -11,8 +12,9 @@ from torchmetrics.audio.stoi import ShortTimeObjectiveIntelligibility as STOI
 
 from PLCMOS.plc_mos import PLCMOSEstimator
 from config import CONFIG
-from loss import Loss
+from loss import Loss, FMLoss, LeastSquaresDiscLoss, LeastSquaresGenLoss
 from models.blocks import Encoder, Predictor
+from models.melgan import MultiScaleDiscriminator
 from utils.utils import visualize, LSD
 from utils.logger import WandbSpectrogramLogging
 
@@ -38,7 +40,10 @@ class PLCModel(pl.LightningModule):
         self.w_lin_mag = float(config["w_lin_mag"])
         self.w_log_mag = 1 - self.w_lin_mag
         self.fft_sizes = [int(i) for i in config["loss_ffts"]]
+        self.disc_lr = CONFIG.DISCRIMINATOR.lr
         self.hop_sizes = [480, 960, 128] #[i // 4 for i in self.fft_sizes]
+        self.disc_alpha = CONFIG.DISCRIMINATOR.adv_disc
+        self.gen_alpha = CONFIG.DISCRIMINATOR.adv_gen
 
         self.stoi = STOI(CONFIG.DATA.sr)
         self.log_spec = WandbSpectrogramLogging()
@@ -57,10 +62,13 @@ class PLCModel(pl.LightningModule):
 
         self.encoder = Encoder(in_dim=self.window_size, dim=self.enc_in_dim, depth=self.enc_layers,
                                mlp_dim=self.enc_dim)
-
+        self.msd = MultiScaleDiscriminator()
+        self.fm_loss = FMLoss(CONFIG.DISCRIMINATOR.fm_alpha)
+        self.disc_loss = LeastSquaresDiscLoss()
+        self.gen_loss = LeastSquaresGenLoss()
         self.loss = Loss(w_log_mag=self.w_log_mag, w_lin_mag=self.w_lin_mag,
                          fft_sizes=self.fft_sizes, hop_sizes=self.hop_sizes)
-        self.window = torch.sqrt(torch.hann_window(self.window_size))
+        self.window = torch.sqrt(torch.hann_window(self.window_size)).to(self.device)
         # self.save_hyperparameters('window_size', 'enc_layers', 'enc_in_dim', 'enc_dim', 'pred_dim', 'pred_layers')
 
     def forward(self, x, mask):
@@ -101,7 +109,7 @@ class PLCModel(pl.LightningModule):
         feat = feat + x
         return feat, prev_mag, predictor_state, mlp_state
 
-    def training_step(self, batch, batch_idx):
+    def training_step(self, batch, batch_idx, optimizer_idx):
         inp, tar, mask = batch
         inp = inp.to(self.device)
         tar = tar.to(self.device)
@@ -110,10 +118,30 @@ class PLCModel(pl.LightningModule):
         x = inp[:, :, 1:, :]
         x = self(x, mask)
         x = torch.cat([f_0, x], dim=2)
-        loss = self.loss(x, tar)
-        log_dict = {"train_stft_loss": loss.item(), "optimizer_rate/optimizer": self.optimizer.param_groups[0]['lr']}
-        self.log_dict(log_dict, on_step=True, on_epoch=False)
-        return loss
+        y = torch.view_as_complex(tar.permute(0, 2, 3, 1).contiguous())
+        y = torch.istft(y, self.window_size, self.hop_size, window=self.window.to(self.device))
+        pred = torch.view_as_complex(x.permute(0, 2, 3, 1).contiguous())
+        pred = torch.istft(pred, self.window_size, self.hop_size, window=self.window.to(self.device))
+        if optimizer_idx == 0:
+            disc_real_out, disc_gen_out = self.msd(y.unsqueeze(1)), self.msd(pred.unsqueeze(1))
+            fm_loss = self.fm_loss(disc_real_out, disc_gen_out)
+            gen_adv_loss = self.gen_alpha * self.gen_loss(disc_gen_out)
+            loss = self.loss(x, tar)
+            total_loss = loss + fm_loss + gen_adv_loss
+            log_dict = {"train_stft_loss": loss.item(),
+                        "train_fm_loss": fm_loss.item(),
+                        "train_gen_adv_loss": gen_adv_loss.item(),
+                        "optimizer_rate/optimizer": self.optimizer.param_groups[0]['lr']}
+            self.log_dict(log_dict, on_step=True, on_epoch=False)
+        else:
+            disc_real_out, disc_gen_out = self.msd(y.unsqueeze(1)), self.msd(pred.unsqueeze(1).detach())
+            disc_adv_loss = self.disc_alpha * self.disc_loss(disc_real_out, disc_gen_out)
+            total_loss = disc_adv_loss
+            log_dict = {"train_disc_adv_loss": disc_adv_loss.item(),
+                        "optimizer_rate/optimizer_disc": self.disc_optimizer.param_groups[0]['lr']}
+            self.log_dict(log_dict, on_step=True, on_epoch=False)
+
+        return total_loss
 
     def validation_step(self, val_batch, batch_idx):
         inp, tar, mask = val_batch
@@ -262,11 +290,16 @@ class PLCModel(pl.LightningModule):
         return pred, inp_wav
 
     def configure_optimizers(self):
-        self.optimizer = torch.optim.Adam(self.parameters(), lr=self.learning_rate)
+        self.optimizer = torch.optim.Adam(itertools.chain(self.predictor.parameters(),
+                                                          self.joiner.parameters(),
+                                                          self.encoder.parameters()),
+                                          lr=self.learning_rate)
+        self.disc_optimizer = torch.optim.Adam(self.msd.parameters(), lr=self.learning_rate)
         # lr_scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(self.optimizer, patience=CONFIG.TRAIN.patience,
         #                                                           factor=CONFIG.TRAIN.factor, verbose=True)
         lr_scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(self.optimizer, T_max=CONFIG.TRAIN.epochs,
                                                                   eta_min=1e-8, verbose=True)
+        disc_scheduler = torch.optim.lr_scheduler.ConstantLR(self.disc_optimizer, factor=1)
         # lr_scheduler = torch.optim.lr_scheduler.ExponentialLR(self.optimizer, gamma=9e-1, last_epoch=CONFIG.TRAIN.epochs)
 
         # scheduler = {
@@ -274,7 +307,7 @@ class PLCModel(pl.LightningModule):
         #     # 'reduce_on_plateau': True,
         #     'monitor': CONFIG.WANDB.monitor
         # }
-        return [self.optimizer], [lr_scheduler]
+        return [self.optimizer, self.disc_optimizer], [lr_scheduler, disc_scheduler]
 
 
 class OnnxWrapper(pl.LightningModule):

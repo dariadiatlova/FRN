@@ -6,6 +6,46 @@ from auraloss.freq import STFTLoss, MultiResolutionSTFTLoss, apply_reduction, Sp
 from config import CONFIG
 
 
+class LeastSquaresGenLoss(pl.LightningModule):
+    def __init__(self):
+        super(LeastSquaresGenLoss, self).__init__()
+
+    def forward(self, disc_outputs):
+        loss = 0
+        for _, score in disc_outputs:
+            layer_loss = torch.mean(torch.sum(torch.pow(score - 1.0, 2), dim=[1, 2]))
+            loss += layer_loss
+        return loss
+
+
+class LeastSquaresDiscLoss(pl.LightningModule):
+    def __init__(self):
+        super(LeastSquaresDiscLoss, self).__init__()
+
+    def forward(self, disc_real_outputs, disc_generated_outputs):
+        loss = 0
+        for (_, score_real), (_, score_fake, ) in zip(disc_real_outputs, disc_generated_outputs):
+            r_loss = torch.mean(torch.sum(torch.pow(score_real - 1.0, 2), dim=[1, 2]))
+            g_loss = torch.mean(torch.sum(torch.pow(score_fake, 2), dim=[1, 2]))
+            loss += (r_loss + g_loss)
+
+        return loss
+
+
+class FMLoss(pl.LightningModule):
+    def __init__(self, fm_alpha):
+        super(FMLoss, self).__init__()
+        self.fm_alpha = fm_alpha
+
+    def forward(self, fmap_r, fmap_g):
+        loss = 0
+        for (feat_real, _), (feat_fake, _) in zip(fmap_r, fmap_g):
+            for feature_real_layer, feature_fake_layer in zip(feat_real, feat_fake):
+                loss += torch.mean(torch.abs(feature_real_layer - feature_fake_layer))
+
+        return loss * self.fm_alpha
+
+
 class STFTLossDDP(STFTLoss):
     def __init__(self,
                  fft_size=1024,
@@ -99,7 +139,7 @@ class MRSTFTLossDDP(MultiResolutionSTFTLoss):
                  fft_sizes=(1024, 2048, 512), # (600, 1200, 240)
                  #hop_sizes=(480, 960, 128), #(120, 240, 50),
                  hop_sizes=(120, 240, 50),
-                 win_lengths=(600, 1200, 240),
+                 # win_lengths=(600, 1200, 240),
                  window="hann_window",
                  w_sc=1.0,
                  w_log_mag=1.0,
@@ -111,7 +151,7 @@ class MRSTFTLossDDP(MultiResolutionSTFTLoss):
                  scale_invariance=False,
                  **kwargs):
         super(MultiResolutionSTFTLoss, self).__init__()
-        # win_lengths = fft_sizes
+        win_lengths = fft_sizes
         assert len(fft_sizes) == len(hop_sizes) == len(win_lengths)  # must define all
         self.stft_losses = torch.nn.ModuleList()
         for fs, ss, wl in zip(fft_sizes, hop_sizes, win_lengths):
