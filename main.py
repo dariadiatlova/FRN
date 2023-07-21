@@ -54,7 +54,7 @@ def resume(train_dataset, val_dataset, version, config):
 def train():
     train_dataset = TrainDataset('train')
     val_dataset = TrainDataset('val')
-    checkpoint_callback = ModelCheckpoint(dirpath=CONFIG.LOG.log_dir, every_n_epochs=1,
+    checkpoint_callback = ModelCheckpoint(dirpath=CONFIG.LOG.log_dir, every_n_epochs=1, save_top_k=3,
                                           monitor=CONFIG.WANDB.monitor, mode='min', verbose=True,
                                           filename='frn-{epoch:02d}-{val_loss:.4f}', save_weights_only=False,
                                           save_last=True, save_on_train_epoch_end=True)
@@ -161,6 +161,7 @@ if __name__ == '__main__':
             else:
                 preds = trainer.predict(model, test_loader, return_predictions=True)
                 mkdir_p(CONFIG.TEST.out_dir)
+                mkdir_p(CONFIG.TEST.out_dir)
                 mkdir_p(CONFIG.TEST.out_dir_orig)
                 for idx, path in enumerate(test_loader.dataset.data_list):
                     out_path = os.path.join(CONFIG.TEST.out_dir, os.path.basename(path))
@@ -169,7 +170,8 @@ if __name__ == '__main__':
                     sf.write(out_orig_path, preds[idx][1].squeeze(0), samplerate=CONFIG.DATA.sr, subtype='PCM_16')
         elif args.mode == 'nbtest':
             with torch.no_grad():
-                mkdir_p(CONFIG.NBTEST.out_dir)
+                mkdir_p(CONFIG.NBTEST.out_dir16)
+                mkdir_p(CONFIG.NBTEST.out_dir48)
                 mkdir_p(CONFIG.NBTEST.out_dir_orig)
                 model.cuda()
                 model.eval()

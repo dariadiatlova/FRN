@@ -3,6 +3,7 @@ from pathlib import Path
 
 import librosa
 import numpy as np
+import torchaudio.transforms as T
 import pytorch_lightning as pl
 import soundfile as sf
 import torch
@@ -30,7 +31,10 @@ class PLCModel(pl.LightningModule):
         self.hop_size = CONFIG.DATA.stride
         self.hparams.batch_size = CONFIG.TRAIN.batch_size
 
+        self.warmup_steps = int(config["warmup_steps"])
+        self.resampler = T.Resample(CONFIG.DATA.sr, CONFIG.DISCRIMINATOR.resample_rate)
         self.learning_rate = float(config["lr"])
+        self.disc_learning_rate = CONFIG.DISCRIMINATOR.lr
         self.enc_layers = int(config["enc_layers"])
         self.enc_in_dim = int(config["enc_in_dim"])
         self.enc_dim = int(config["enc_dim"])
@@ -40,7 +44,6 @@ class PLCModel(pl.LightningModule):
         self.w_lin_mag = float(config["w_lin_mag"])
         self.w_log_mag = 1 - self.w_lin_mag
         self.fft_sizes = [int(i) for i in config["loss_ffts"]]
-        self.disc_lr = CONFIG.DISCRIMINATOR.lr
         self.hop_sizes = [480, 960, 128] #[i // 4 for i in self.fft_sizes]
         self.disc_alpha = CONFIG.DISCRIMINATOR.adv_disc
         self.gen_alpha = CONFIG.DISCRIMINATOR.adv_gen
@@ -123,24 +126,30 @@ class PLCModel(pl.LightningModule):
         pred = torch.view_as_complex(x.permute(0, 2, 3, 1).contiguous())
         pred = torch.istft(pred, self.window_size, self.hop_size, window=self.window.to(self.device))
         if optimizer_idx == 0:
-            disc_real_out, disc_gen_out = self.msd(y.unsqueeze(1)), self.msd(pred.unsqueeze(1))
-            fm_loss = self.fm_loss(disc_real_out, disc_gen_out)
-            gen_adv_loss = self.gen_alpha * self.gen_loss(disc_gen_out)
-            loss = self.loss(x, tar)
-            total_loss = loss + fm_loss + gen_adv_loss
-            log_dict = {"train_stft_loss": loss.item(),
-                        "train_fm_loss": fm_loss.item(),
-                        "train_gen_adv_loss": gen_adv_loss.item(),
+            total_loss = self.loss(x, tar)
+            log_dict = {"train_stft_loss": total_loss.item(),
                         "optimizer_rate/optimizer": self.optimizer.param_groups[0]['lr']}
+            if self.global_step > self.warmup_steps:
+                disc_real_out, disc_gen_out = self.msd(y.unsqueeze(1)), self.msd(pred.unsqueeze(1))
+                fm_loss = self.fm_loss(disc_real_out, disc_gen_out)
+                gen_adv_loss = self.gen_alpha * self.gen_loss(disc_gen_out)
+                total_loss = total_loss + fm_loss + gen_adv_loss
+                log_dict["train_fm_loss"] = fm_loss.item()
+                log_dict["gen_adv_loss"] = gen_adv_loss.item()
+                log_dict["total_loss"] = total_loss.item()
             self.log_dict(log_dict, on_step=True, on_epoch=False)
-        else:
+        elif self.global_step > self.warmup_steps:
+            y = self.resampler(y)
+            pred = self.resampler(pred)
             disc_real_out, disc_gen_out = self.msd(y.unsqueeze(1)), self.msd(pred.unsqueeze(1).detach())
             disc_adv_loss = self.disc_alpha * self.disc_loss(disc_real_out, disc_gen_out)
             total_loss = disc_adv_loss
             log_dict = {"train_disc_adv_loss": disc_adv_loss.item(),
                         "optimizer_rate/optimizer_disc": self.disc_optimizer.param_groups[0]['lr']}
             self.log_dict(log_dict, on_step=True, on_epoch=False)
-
+        else:
+            # warmup steps
+            return None
         return total_loss
 
     def validation_step(self, val_batch, batch_idx):
@@ -230,7 +239,7 @@ class PLCModel(pl.LightningModule):
             for i in range(inp.shape[0]):
                 y_i = y[i]
                 pred_i = pred[i]
-                out_dir_path = Path(CONFIG.NBTEST.out_dir) / name[i]
+                out_dir_path = Path(CONFIG.NBTEST.out_dir48) / name[i]
                 out_dir_orig_path = Path(CONFIG.NBTEST.out_dir_orig) / name[i]
                 sf.write(out_dir_orig_path, loosy_signal[i].squeeze(0).cpu().numpy(), samplerate=CONFIG.DATA.sr, subtype='PCM_16')
                 sf.write(out_dir_path, pred_i.squeeze(0).cpu().numpy(), samplerate=CONFIG.DATA.sr, subtype='PCM_16')
@@ -239,9 +248,12 @@ class PLCModel(pl.LightningModule):
             stoi_predicted = self.stoi(loosy_signal, y)
 
             if CONFIG.DATA.sr != 16000:
+                out_dir_path = Path(CONFIG.NBTEST.out_dir16) / name[i]
                 pred, y = pred.detach().cpu().numpy(), y.detach().cpu().numpy()
                 loosy_signal = loosy_signal.detach().cpu().numpy()
                 pred = librosa.resample(pred, orig_sr=48000, target_sr=16000)
+                pred_i = pred[i]
+                sf.write(out_dir_path, pred_i, samplerate=16000, subtype='PCM_16')
                 y = librosa.resample(y, orig_sr=48000, target_sr=16000, res_type='kaiser_fast')
                 loosy_signal = librosa.resample(loosy_signal, orig_sr=48000, target_sr=16000, res_type='kaiser_fast')
 
@@ -294,11 +306,11 @@ class PLCModel(pl.LightningModule):
                                                           self.joiner.parameters(),
                                                           self.encoder.parameters()),
                                           lr=self.learning_rate)
-        self.disc_optimizer = torch.optim.Adam(self.msd.parameters(), lr=self.learning_rate)
+        self.disc_optimizer = torch.optim.Adam(self.msd.parameters(), lr=self.disc_learning_rate)
         # lr_scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(self.optimizer, patience=CONFIG.TRAIN.patience,
         #                                                           factor=CONFIG.TRAIN.factor, verbose=True)
         lr_scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(self.optimizer, T_max=CONFIG.TRAIN.epochs,
-                                                                  eta_min=1e-8, verbose=True)
+                                                                  eta_min=self.eta_min, verbose=True)
         disc_scheduler = torch.optim.lr_scheduler.ConstantLR(self.disc_optimizer, factor=1)
         # lr_scheduler = torch.optim.lr_scheduler.ExponentialLR(self.optimizer, gamma=9e-1, last_epoch=CONFIG.TRAIN.epochs)
 

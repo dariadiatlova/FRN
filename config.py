@@ -1,5 +1,5 @@
 class CONFIG:
-    gpus = "5"  # List of gpu devices
+    gpus = "0"  # List of gpu devices
 
     class TRAIN:
         pred_ckpt_path = "lightning_logs/predictor/checkpoints/predictor.ckpt"
@@ -7,8 +7,8 @@ class CONFIG:
         batch_size = 256  # number of audio files per batch
         lr = 1e-2  # learning rate
         limit_val_batches = 1 #1
-        epochs = 300 #100  # max training epochs
-        check_val_every_n_epoch = 10 #1 # run validation each
+        epochs = 100 #100  # max training epochs
+        check_val_every_n_epoch = 5 #1 # run validation each
         workers = 1  # number of dataloader workers
         val_split = 0.02  # validation set proportion
         clipping_val = 1.0  # gradient clipping value
@@ -16,10 +16,11 @@ class CONFIG:
         factor = 0.5  # learning rate reduction factor
 
     class DISCRIMINATOR:
-        fm_alpha = 10
-        adv_gen = 1e-2
-        adv_disc = 1e-2
-        lr = 1e-4
+        fm_alpha = 1
+        adv_gen = 1e-3
+        adv_disc = 1e-3
+        lr = 1e-5
+        resample_rate = 8000
 
 
     # # Model config
@@ -69,8 +70,8 @@ class CONFIG:
             trace_path = 'test_samples/blind/lossy_singals'  # must be clarified if masking = 'real'
 
     class LOG:
-        log_dir = 'adv_masked_lightning_logs' #'sweep_lightning_logs'  # checkpoint and log directory
-        sample_path = 'adv_masked_lightning_samples' #'sweep_samples'  # path to save generated audio samples in evaluation.
+        log_dir = 'warmup10k_dis8k_lightning_logs' #'sweep_lightning_logs'  # checkpoint and log directory
+        sample_path = 'warmup10k_dis8k_lightning_samples' #'sweep_samples'  # path to save generated audio samples in evaluation.
 
     class TEST:
         in_dir = 'blind/lossy_signals'  # path to test audio inputs
@@ -79,7 +80,7 @@ class CONFIG:
         out_dir_orig = 'blind/lossy_signals48k'
 
     class NBTEST:
-        ckpt_path = 'adv_masked_lightning_logs/last.ckpt'
+        ckpt_path = 'warmup10k_dis8k_lightning_logs/frn-epoch=09-val_loss=0.0000.ckpt'
         to_synthesize = None # first n samples from real_dir will be synthesized with the loss in loss_path
         packet_size = 960  # 20ms
         transition_probs = [(0.9, 0.1)]  # (0.9, 0.1) ~ 10%; (0.8, 0.2) ~ 20%; (0.6, 0.4) ~ 40%
@@ -87,8 +88,9 @@ class CONFIG:
         assert masking in ['gen', 'real']
         loss_path = 'blind/lossy_signals'  # must be clarified if masking = 'real'
         real_dir = 'X_CleanReference'
-        out_dir = 'test_inference/dummy_adversarial_gen'  # path to generated outputs
+        out_dir48 = 'test_inference/warmup_dis8k_9_gen48'  # path to generated outputs 48kHz
         out_dir_orig = 'test_inference/epoch99_adversarial_loosy'
+        out_dir16 = 'test_inference/warmup_dis8k_9_gen16'  # path to generated outputs шт 16kHz
 
     class WANDB:
         project = "FRN"
